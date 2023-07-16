@@ -48,7 +48,9 @@ public:
         LockingList& locking_list = m_buckets[bucket_idx];
         ElementList& element_list = locking_list.m_list;
 
-        // Write lock on linked list
+        // Write lock on linked list.
+        // There is a chance that we're just reading the value, in which case a read lock would be just fine, but we
+        // don't have boost's upgrade lock to move from a read to a write lock.
         std::unique_lock<SharedMutex> list_lock(locking_list.m_mutex);
 
         // Lookup value. If there, return
@@ -79,6 +81,8 @@ public:
             locking_list.m_mutex.unlock();
             // Undo bucket lock
             m_bucket_mutex.unlock();
+
+
 
             // TODO: max of this and load_factor
             rehash(bucket_count * 3u / 2u);
