@@ -42,8 +42,8 @@ public:
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
 
-        const auto bucket_count = m_buckets.size();
-        const auto bucket_idx   = get_bucket_index(hasher{}(key), bucket_count);
+        const auto num_buckets  = m_buckets.size();
+        const auto bucket_idx   = get_bucket_index(hasher{}(key), num_buckets);
 
         LockingList& locking_list = m_buckets[bucket_idx];
         ElementList& element_list = locking_list.m_list;
@@ -70,22 +70,21 @@ public:
         // emplace_front does not return anything until C++17, so do it the hard way...
         const T& ret = element_list.front().second;
 
-        std::size_t num_elements;
-        {
-            std::unique_lock<SharedMutex> num_elements_lock(m_num_elements_mutex);
-            num_elements = ++m_num_elements;
-        }
-
-        if (num_elements > max_load_factor() * bucket_count) {
+        const std::size_t num_elements = ++m_num_elements;
+        const auto max_load_factor = m_max_load_factor.load(); // Only do atomic load once...
+        if (num_elements > max_load_factor * num_buckets) {
             // Undo list lock
             locking_list.m_mutex.unlock();
             // Undo bucket lock
             m_bucket_mutex.unlock();
 
+            // 1. load_factor = num_elements / num_buckets
+            // 2. num_buckets * load_factor = num_elements
+            // 3. num_buckets = num_elements / load_factor
 
+            const auto load_factor_required_buckets = static_cast<size_type>(num_elements / max_load_factor);
 
-            // TODO: max of this and load_factor
-            rehash(bucket_count * 3u / 2u);
+            rehash(std::max(num_buckets * 3u / 2u, load_factor_required_buckets * 2u));
         }
 
         return ret;
@@ -128,7 +127,6 @@ public:
 
     void update(const Key& key, T value)
     {
-
     }
 
     // While technically thread-safe, use this with caution if there are other active threads.
@@ -140,19 +138,22 @@ public:
 
     float load_factor() const
     {
-        // TODO
-        return 1.0f;
+        std::size_t bucket_count;
+        {
+            // Read lock on bucket list
+            std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+            bucket_count = m_buckets.size();
+        }
+        return static_cast<float>(m_num_elements) / static_cast<float>(bucket_count);
     }
 
     float max_load_factor() const noexcept
     {
-        // Read lock
         return m_max_load_factor;
     }
 
     void max_load_factor(float ml) noexcept
     {
-        // Write lock
         m_max_load_factor = ml;
     }
 
@@ -169,9 +170,9 @@ public:
         for (auto& bucket : m_buckets) {
             ElementList& old_list = bucket.m_list;
             while (!old_list.empty()) {
-                const auto hash = hasher{}(old_list.cbegin()->first);
-                const auto new_bucket_idx = get_bucket_index(hash, new_bucket_count);
-                ElementList& new_list = new_locking_list[new_bucket_idx].m_list;
+                const auto   hash           = hasher{}(old_list.cbegin()->first);
+                const auto   new_bucket_idx = get_bucket_index(hash, new_bucket_count);
+                ElementList& new_list       = new_locking_list[new_bucket_idx].m_list;
                 new_list.splice_after(new_list.cbefore_begin(), old_list, old_list.cbefore_begin());
             }
         }
@@ -212,9 +213,8 @@ private:
     }
 
     mutable SharedMutex m_bucket_mutex;
-    mutable SharedMutex m_num_elements_mutex;
 
-    float       m_max_load_factor{1.0f};
-    std::size_t m_num_elements{0};
-    BucketList  m_buckets;
+    std::atomic<float>       m_max_load_factor{1.0f};
+    std::atomic<std::size_t> m_num_elements{0};
+    BucketList               m_buckets;
 };
