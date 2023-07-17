@@ -33,6 +33,7 @@ public:
     ThreadSafeCache(Iterator first, Iterator last, size_type bucket_count = k_default_bucket_count)
     : m_buckets(std::max(bucket_count, size_type(1)))
     {
+        // TODO: implement
     }
 
     template <typename F>
@@ -41,8 +42,8 @@ public:
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
 
-        const auto num_buckets  = m_buckets.size();
-        const auto bucket_idx   = get_bucket_index(hasher{}(key), num_buckets);
+        const auto num_buckets = m_buckets.size();
+        const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
 
         LockingList& locking_list = m_buckets[bucket_idx];
         ElementList& element_list = locking_list.m_list;
@@ -69,13 +70,13 @@ public:
         // emplace_front does not return anything until C++17, so do it the hard way...
         const T& ret = element_list.front().second;
 
-        const std::size_t num_elements = ++m_num_elements;
-        const auto max_load_factor = m_max_load_factor.load(); // Only do atomic load once...
+        const std::size_t num_elements    = ++m_num_elements;
+        const auto        max_load_factor = m_max_load_factor.load(); // Only do atomic load once...
         if (num_elements > max_load_factor * num_buckets) {
             // Undo list lock
             locking_list.m_mutex.unlock();
             // Undo bucket lock
-            m_bucket_mutex.unlock();
+            m_bucket_mutex.unlock_shared();
 
             // 1. load_factor = num_elements / num_buckets
             // 2. num_buckets * load_factor = num_elements
@@ -108,8 +109,8 @@ public:
         const auto bucket_count = m_buckets.size();
         const auto bucket_idx   = get_bucket_index(hasher{}(key), bucket_count);
 
-        LockingList& locking_list = m_buckets[bucket_idx];
-        ElementList& element_list = locking_list.m_list;
+        const LockingList& locking_list = m_buckets[bucket_idx];
+        const ElementList& element_list = locking_list.m_list;
 
         // Read lock on linked list
         std::shared_lock<SharedMutex> list_lock(locking_list.m_mutex);
@@ -194,7 +195,6 @@ private:
     static constexpr size_type k_default_bucket_count{32};
 
     using SharedMutex = std::shared_timed_mutex;
-
     using ElementList = std::forward_list<value_type>;
 
     struct LockingList
@@ -214,7 +214,9 @@ private:
     {
         // Hashing by multiplication
         constexpr double phi = 1.618033988749894848204;
-        return static_cast<std::size_t>(num_buckets * mod1(hash * phi));
+        const auto       idx = static_cast<std::size_t>(num_buckets * mod1(hash * phi));
+        ensures(idx < num_buckets);
+        return idx;
     }
 
     bool update_impl(const Key& key, T&& value)
@@ -222,8 +224,8 @@ private:
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
 
-        const auto num_buckets  = m_buckets.size();
-        const auto bucket_idx   = get_bucket_index(hasher{}(key), num_buckets);
+        const auto num_buckets = m_buckets.size();
+        const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
 
         LockingList& locking_list = m_buckets[bucket_idx];
         ElementList& element_list = locking_list.m_list;
@@ -243,7 +245,6 @@ private:
         }
         return false;
     }
-
 
     mutable SharedMutex m_bucket_mutex;
 
