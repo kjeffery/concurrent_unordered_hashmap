@@ -35,7 +35,6 @@ public:
     {
     }
 
-    // TODO: can these return references? We have to be careful about rehashing not invalidating references.
     template <typename F>
     const T& find_or_create(const Key& key, F&& creator)
     {
@@ -65,7 +64,7 @@ public:
         // Else create
         // No sentinel needed: we have a write lock
 
-        element_list.emplace_front(key, creator(key));
+        element_list.emplace_front(key, std::forward<F>(creator)(key));
 
         // emplace_front does not return anything until C++17, so do it the hard way...
         const T& ret = element_list.front().second;
@@ -125,8 +124,14 @@ public:
         return it->second;
     }
 
-    void update(const Key& key, T value)
+    bool update(const Key& key, T value)
     {
+        return update_impl(key, std::move(value));
+    }
+
+    bool update(const Key& key, T&& value)
+    {
+        return update_impl(key, std::forward<T>(value));
     }
 
     // While technically thread-safe, use this with caution if there are other active threads.
@@ -211,6 +216,34 @@ private:
         constexpr double phi = 1.618033988749894848204;
         return static_cast<std::size_t>(num_buckets * mod1(hash * phi));
     }
+
+    bool update_impl(const Key& key, T&& value)
+    {
+        // Read lock on bucket list
+        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+
+        const auto num_buckets  = m_buckets.size();
+        const auto bucket_idx   = get_bucket_index(hasher{}(key), num_buckets);
+
+        LockingList& locking_list = m_buckets[bucket_idx];
+        ElementList& element_list = locking_list.m_list;
+
+        // Write lock on linked list.
+        // There is a chance that we're just reading the value, in which case a read lock would be just fine, but we
+        // don't have boost's upgrade lock to move from a read to a write lock.
+        std::unique_lock<SharedMutex> list_lock(locking_list.m_mutex);
+
+        // Lookup value.
+        auto compare = [&key](const auto& r) { return r.first == key; };
+
+        const auto it = std::find_if(element_list.cbegin(), element_list.cend(), compare);
+        if (it != element_list.cend()) {
+            it->second = std::move(value);
+            return true;
+        }
+        return false;
+    }
+
 
     mutable SharedMutex m_bucket_mutex;
 
