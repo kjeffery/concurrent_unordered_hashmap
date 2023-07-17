@@ -36,6 +36,8 @@ public:
         // TODO: implement
     }
 
+    // TODO: consider returning non-const references even though it's up to the user to make sure they are accessed in a
+    // thead-safe manner.
     template <typename F>
     const T& find_or_create(const Key& key, F&& creator)
     {
