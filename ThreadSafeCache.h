@@ -12,6 +12,13 @@
 template <typename Key, typename T>
 class ThreadSafeCache
 {
+    enum class CreationType
+    {
+        DEFAULT,
+        COPY,
+        GENERATE
+    };
+
 public:
     using size_type       = std::size_t;
     using hasher          = std::hash<Key>; // TODO: template
@@ -39,58 +46,24 @@ public:
     // TODO: consider returning non-const references even though it's up to the user to make sure they are accessed in a
     // thead-safe manner.
     template <typename F>
-    const T& find_or_create(const Key& key, F&& creator)
+    const T& find_or_generate(const Key& key, F&& creator)
     {
-        // Read lock on bucket list
-        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+        return find_or_create_impl<CreationType::GENERATE>(key, std::forward<F>(creator));
+    }
 
-        const auto num_buckets = m_buckets.size();
-        const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
+    const T& find_or_create(const Key& key)
+    {
+        return find_or_create_impl<CreationType::DEFAULT>(key, DefaultConstruct{});
+    }
 
-        LockingList& locking_list = m_buckets[bucket_idx];
-        ElementList& element_list = locking_list.m_list;
+    const T& find_or_create(const Key& key, T&& model)
+    {
+        return find_or_create_impl<CreationType::COPY>(key, std::forward<T>(model));
+    }
 
-        // Write lock on linked list.
-        // There is a chance that we're just reading the value, in which case a read lock would be just fine, but we
-        // don't have boost's upgrade lock to move from a read to a write lock.
-        std::unique_lock<SharedMutex> list_lock(locking_list.m_mutex);
-
-        // Lookup value. If there, return
-
-        auto compare = [&key](const auto& r) { return r.first == key; };
-
-        const auto it = std::find_if(element_list.cbegin(), element_list.cend(), compare);
-        if (it != element_list.cend()) {
-            return it->second;
-        }
-
-        // Else create
-        // No sentinel needed: we have a write lock
-
-        element_list.emplace_front(key, std::forward<F>(creator)(key));
-
-        // emplace_front does not return anything until C++17, so do it the hard way...
-        const auto& result = element_list.front();
-
-        const std::size_t num_elements    = ++m_num_elements;
-        const auto        max_load_factor = m_max_load_factor.load(); // Only do atomic load once...
-        if (num_elements > max_load_factor * num_buckets) {
-            // Unlock list
-            list_lock.unlock();
-
-            // Unlock bucket
-            bucket_lock.unlock();
-
-            // 1. load_factor = num_elements / num_buckets
-            // 2. num_buckets * load_factor = num_elements
-            // 3. num_buckets = num_elements / load_factor
-
-            const auto load_factor_required_buckets = static_cast<size_type>(num_elements / max_load_factor);
-
-            rehash(std::max(num_buckets * 3u / 2u, load_factor_required_buckets * 2u));
-        }
-
-        return result.second;
+    const T& find_or_create(const Key& key, const T& model)
+    {
+        return find_or_create_impl<CreationType::COPY>(key, model);
     }
 
     // C++17: optional
@@ -200,6 +173,10 @@ private:
     using SharedMutex = std::shared_timed_mutex;
     using ElementList = std::forward_list<value_type>;
 
+    struct DefaultConstruct
+    {
+    };
+
     struct LockingList
     {
         ElementList         m_list;
@@ -220,6 +197,93 @@ private:
         const auto       idx = static_cast<std::size_t>(num_buckets * mod1(hash * phi));
         ensures(idx < num_buckets);
         return idx;
+    }
+
+    template <CreationType>
+    struct Construct;
+
+    template <>
+    struct Construct<CreationType::GENERATE>
+    {
+        template <typename F>
+        static void construct(ElementList& list, const Key& key, F&& creator)
+        {
+            list.emplace_front(key, std::forward<F>(creator)(key));
+        }
+    };
+
+    template <>
+    struct Construct<CreationType::COPY>
+    {
+        static void construct(ElementList& list, const Key& key, const T& model)
+        {
+            list.emplace_front(key, model);
+        }
+    };
+
+    template <>
+    struct Construct<CreationType::DEFAULT>
+    {
+        static void construct(ElementList& list, const Key& key, DefaultConstruct)
+        {
+            list.emplace_front(key, T{});
+        }
+    };
+
+    template <CreationType creation_type, typename F>
+    const T& find_or_create_impl(const Key& key, F&& creator)
+    {
+        // Read lock on bucket list
+        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+
+        const auto num_buckets = m_buckets.size();
+        const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
+
+        LockingList& locking_list = m_buckets[bucket_idx];
+        ElementList& element_list = locking_list.m_list;
+
+        // Write lock on linked list.
+        // There is a chance that we're just reading the value, in which case a read lock would be just fine, but we
+        // don't have boost's upgrade lock to move from a read to a write lock.
+        std::unique_lock<SharedMutex> list_lock(locking_list.m_mutex);
+
+        // Lookup value. If there, return
+
+        auto compare = [&key](const auto& r) { return r.first == key; };
+
+        const auto it = std::find_if(element_list.cbegin(), element_list.cend(), compare);
+        if (it != element_list.cend()) {
+            return it->second;
+        }
+
+        // Else create
+        // No sentinel needed: we have a write lock
+
+        Construct<creation_type>::construct(element_list, key, std::forward<F>(creator));
+        // element_list.emplace_front(key, std::forward<F>(creator)(key));
+
+        // emplace_front does not return anything until C++17, so do it the hard way...
+        const auto& result = element_list.front();
+
+        const std::size_t num_elements    = ++m_num_elements;
+        const auto        max_load_factor = m_max_load_factor.load(); // Only do atomic load once...
+        if (num_elements > max_load_factor * num_buckets) {
+            // Unlock list
+            list_lock.unlock();
+
+            // Unlock bucket
+            bucket_lock.unlock();
+
+            // 1. load_factor = num_elements / num_buckets
+            // 2. num_buckets * load_factor = num_elements
+            // 3. num_buckets = num_elements / load_factor
+
+            const auto load_factor_required_buckets = static_cast<size_type>(num_elements / max_load_factor);
+
+            rehash(std::max(num_buckets * 3u / 2u, load_factor_required_buckets * 2u));
+        }
+
+        return result.second;
     }
 
     bool update_impl(const Key& key, T&& value)
