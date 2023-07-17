@@ -70,15 +70,16 @@ public:
         element_list.emplace_front(key, std::forward<F>(creator)(key));
 
         // emplace_front does not return anything until C++17, so do it the hard way...
-        const T& ret = element_list.front().second;
+        const auto& result = element_list.front();
 
         const std::size_t num_elements    = ++m_num_elements;
         const auto        max_load_factor = m_max_load_factor.load(); // Only do atomic load once...
         if (num_elements > max_load_factor * num_buckets) {
-            // Undo list lock
-            locking_list.m_mutex.unlock();
-            // Undo bucket lock
-            m_bucket_mutex.unlock_shared();
+            // Unlock list
+            list_lock.unlock();
+
+            // Unlock bucket
+            bucket_lock.unlock();
 
             // 1. load_factor = num_elements / num_buckets
             // 2. num_buckets * load_factor = num_elements
@@ -89,7 +90,7 @@ public:
             rehash(std::max(num_buckets * 3u / 2u, load_factor_required_buckets * 2u));
         }
 
-        return ret;
+        return result.second;
     }
 
     // C++17: optional
