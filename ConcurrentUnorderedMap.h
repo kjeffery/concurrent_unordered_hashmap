@@ -330,7 +330,6 @@ private:
         // No sentinel needed: we have a write lock
 
         Construct<creation_type>::construct(element_list, key, std::forward<F>(creator));
-        // element_list.emplace_front(key, std::forward<F>(creator)(key));
 
         // emplace_front does not return anything until C++17, so do it the hard way...
         auto& result = element_list.front();
