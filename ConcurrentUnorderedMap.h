@@ -102,25 +102,26 @@ public:
         }
     }
 
-    // TODO: consider returning non-const references even though it's up to the user to make sure they are accessed in a
-    // thead-safe manner.
+    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
+    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
+    // references. I suggest you copy them or store them in const values.
     template <typename F>
-    const T& find_or_generate(const Key& key, F&& creator)
+    T& find_or_generate(const Key& key, F&& creator)
     {
         return find_or_create_impl<CreationType::GENERATE>(key, std::forward<F>(creator));
     }
 
-    const T& find_or_create(const Key& key)
+    T& find_or_create(const Key& key)
     {
         return find_or_create_impl<CreationType::DEFAULT>(key, DefaultConstruct{});
     }
 
-    const T& find_or_create(const Key& key, T&& model)
+    T& find_or_create(const Key& key, T&& model)
     {
         return find_or_create_impl<CreationType::COPY>(key, std::forward<T>(model));
     }
 
-    const T& find_or_create(const Key& key, const T& model)
+    T& find_or_create(const Key& key, const T& model)
     {
         return find_or_create_impl<CreationType::COPY>(key, model);
     }
@@ -291,7 +292,7 @@ private:
     };
 
     template <CreationType creation_type, typename F>
-    const T& find_or_create_impl(const Key& key, F&& creator)
+    T& find_or_create_impl(const Key& key, F&& creator)
     {
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
@@ -311,7 +312,7 @@ private:
 
         auto compare = [&key](const auto& r) { return r.first == key; };
 
-        const auto it = std::find_if(element_list.cbegin(), element_list.cend(), compare);
+        auto it = std::find_if(element_list.begin(), element_list.end(), compare);
         if (it != element_list.cend()) {
             return it->second;
         }
@@ -323,7 +324,7 @@ private:
         // element_list.emplace_front(key, std::forward<F>(creator)(key));
 
         // emplace_front does not return anything until C++17, so do it the hard way...
-        const auto& result = element_list.front();
+        auto& result = element_list.front();
 
         const std::size_t num_elements    = ++m_num_elements;
         const auto        max_load_factor = m_max_load_factor.load(); // Only do atomic load once...
