@@ -3,6 +3,8 @@
 #include <cassert>
 #include <cmath>
 #include <forward_list>
+#include <iomanip>
+#include <iostream>
 #include <shared_mutex>
 #include <vector>
 
@@ -41,6 +43,19 @@ public:
     : m_buckets(std::max(bucket_count, size_type(1)))
     {
         // TODO: implement
+    }
+
+    void histogram()
+    {
+        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+
+        for (std::size_t i = 0; i < m_buckets.size(); ++i) {
+            std::cout << std::setw(4) << i << " | ";
+            const auto& locking_list = m_buckets[i].m_list;
+            std::shared_lock<SharedMutex> list_lock(m_buckets[i].m_mutex);
+            const auto num_elements = std::distance(locking_list.cbegin(), locking_list.cend());
+            std::cout << std::string(num_elements, '*') << '\n';
+        }
     }
 
     // TODO: consider returning non-const references even though it's up to the user to make sure they are accessed in a
