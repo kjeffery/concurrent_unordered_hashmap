@@ -58,11 +58,8 @@ inline double bitsToDouble(uint32_t n) noexcept
 template <typename Key, typename T>
 class ConcurrentUnorderedMap
 {
-    enum class CreationType
+    struct DefaultConstruct
     {
-        DEFAULT,
-        COPY,
-        GENERATE
     };
 
 public:
@@ -108,7 +105,7 @@ public:
     template <typename F>
     T& find_or_generate(const Key& key, F&& creator)
     {
-        return find_or_create_impl<CreationType::GENERATE>(key, std::forward<F>(creator));
+        return find_or_create_impl<ConstructGenerator>(key, std::forward<F>(creator));
     }
 
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
@@ -116,7 +113,7 @@ public:
     // references. I suggest you copy them or store them in const values.
     T& find_or_create(const Key& key)
     {
-        return find_or_create_impl<CreationType::DEFAULT>(key, DefaultConstruct{});
+        return find_or_create_impl<ConstructDefault>(key, DefaultConstruct{});
     }
 
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
@@ -124,7 +121,7 @@ public:
     // references. I suggest you copy them or store them in const values.
     T& find_or_create(const Key& key, T&& model)
     {
-        return find_or_create_impl<CreationType::COPY>(key, std::forward<T>(model));
+        return find_or_create_impl<ConstructMove>(key, std::forward<T>(model));
     }
 
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
@@ -132,7 +129,7 @@ public:
     // references. I suggest you copy them or store them in const values.
     T& find_or_create(const Key& key, const T& model)
     {
-        return find_or_create_impl<CreationType::COPY>(key, model);
+        return find_or_create_impl<ConstructCopy>(key, model);
     }
 
     // C++17: optional
@@ -242,8 +239,37 @@ private:
     using SharedMutex = std::shared_timed_mutex;
     using ElementList = std::forward_list<value_type>;
 
-    struct DefaultConstruct
+    struct ConstructGenerator
     {
+        template <typename F>
+        static void construct(ElementList& list, const Key& key, F&& creator)
+        {
+            list.emplace_front(key, std::forward<F>(creator)(key));
+        }
+    };
+
+    struct ConstructCopy
+    {
+        static void construct(ElementList& list, const Key& key, const T& model)
+        {
+            list.emplace_front(key, model);
+        }
+    };
+
+    struct ConstructMove
+    {
+        static void construct(ElementList& list, const Key& key, T&& model)
+        {
+            list.emplace_front(key, std::forward<T>(model));
+        }
+    };
+
+    struct ConstructDefault
+    {
+        static void construct(ElementList& list, const Key& key, DefaultConstruct)
+        {
+            list.emplace_front(key, T{});
+        }
     };
 
     struct LockingList
@@ -269,38 +295,7 @@ private:
         return idx;
     }
 
-    template <CreationType>
-    struct Construct;
-
-    template <>
-    struct Construct<CreationType::GENERATE>
-    {
-        template <typename F>
-        static void construct(ElementList& list, const Key& key, F&& creator)
-        {
-            list.emplace_front(key, std::forward<F>(creator)(key));
-        }
-    };
-
-    template <>
-    struct Construct<CreationType::COPY>
-    {
-        static void construct(ElementList& list, const Key& key, const T& model)
-        {
-            list.emplace_front(key, model);
-        }
-    };
-
-    template <>
-    struct Construct<CreationType::DEFAULT>
-    {
-        static void construct(ElementList& list, const Key& key, DefaultConstruct)
-        {
-            list.emplace_front(key, T{});
-        }
-    };
-
-    template <CreationType creation_type, typename F>
+    template <typename Creator, typename F>
     T& find_or_create_impl(const Key& key, F&& creator)
     {
         // Read lock on bucket list
@@ -329,7 +324,7 @@ private:
         // Else create
         // No sentinel needed: we have a write lock
 
-        Construct<creation_type>::construct(element_list, key, std::forward<F>(creator));
+        Creator::construct(element_list, key, std::forward<F>(creator));
 
         // emplace_front does not return anything until C++17, so do it the hard way...
         auto& result = element_list.front();
