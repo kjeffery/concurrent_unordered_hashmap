@@ -111,16 +111,25 @@ public:
         return find_or_create_impl<CreationType::GENERATE>(key, std::forward<F>(creator));
     }
 
+    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
+    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
+    // references. I suggest you copy them or store them in const values.
     T& find_or_create(const Key& key)
     {
         return find_or_create_impl<CreationType::DEFAULT>(key, DefaultConstruct{});
     }
 
+    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
+    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
+    // references. I suggest you copy them or store them in const values.
     T& find_or_create(const Key& key, T&& model)
     {
         return find_or_create_impl<CreationType::COPY>(key, std::forward<T>(model));
     }
 
+    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
+    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
+    // references. I suggest you copy them or store them in const values.
     T& find_or_create(const Key& key, const T& model)
     {
         return find_or_create_impl<CreationType::COPY>(key, model);
