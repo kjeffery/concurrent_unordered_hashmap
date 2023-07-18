@@ -11,6 +11,50 @@
 #define expects(x) assert(x)
 #define ensures(x) assert(x)
 
+template <typename ReturnType, typename OriginalType>
+inline ReturnType bitCast(OriginalType val) noexcept
+{
+    static_assert(sizeof(ReturnType) == sizeof(OriginalType), "Types must be of the same size.");
+
+    union
+    {
+        OriginalType in;
+        ReturnType   out;
+    };
+
+    in = val;
+    return out;
+}
+
+inline double bitsToDouble(uint64_t n) noexcept
+{
+    static_assert(std::numeric_limits<double>::is_iec559, "Format must be IEEE-754");
+
+    // Set the exponent to 1023, but leave the sign as zero. With the bias, this
+    // ultimately means the exponent bits are set to zero and the exponent is
+    // therefore implicitly one.  This allows us to fill in the bits for a
+    // number in [1, 2), which is uniformly distributed.
+    constexpr uint64_t expMask = 1023ULL << 52ULL;
+
+    // Use n's higher-order bits by shifting past the sign and exponent into
+    // the fraction. This isn't strictly necessary, in the general case, but
+    // it's important for some of the QMC algorithms.
+    const uint64_t asInt = expMask | (n >> 12ULL);
+
+    // Force our bits into a floating point representation, and subtract one,
+    // to get in [0, 1).
+    const double f = bitCast<double>(asInt) - 1.0;
+
+    ensures(f >= 0.0 && f < 1.0);
+    return f;
+}
+
+inline double bitsToDouble(uint32_t n) noexcept
+{
+    static_assert(std::numeric_limits<double>::is_iec559, "Format must be IEEE-754");
+    return bitsToDouble(static_cast<uint64_t>(n) << 32);
+}
+
 template <typename Key, typename T>
 class ConcurrentUnorderedMap
 {
@@ -51,9 +95,9 @@ public:
 
         for (std::size_t i = 0; i < m_buckets.size(); ++i) {
             std::cout << std::setw(4) << i << " | ";
-            const auto& locking_list = m_buckets[i].m_list;
+            const auto&                   locking_list = m_buckets[i].m_list;
             std::shared_lock<SharedMutex> list_lock(m_buckets[i].m_mutex);
-            const auto num_elements = std::distance(locking_list.cbegin(), locking_list.cend());
+            const auto                    num_elements = std::distance(locking_list.cbegin(), locking_list.cend());
             std::cout << std::string(num_elements, '*') << '\n';
         }
     }
@@ -208,8 +252,9 @@ private:
     static std::size_t get_bucket_index(std::size_t hash, std::size_t num_buckets) noexcept
     {
         // Hashing by multiplication
-        constexpr double phi = 1.618033988749894848204;
-        const auto       idx = static_cast<std::size_t>(num_buckets * mod1(hash * phi));
+        constexpr double phi  = 1.618033988749894848204;
+        const auto       mult = mod1(bitsToDouble(hash) * phi);
+        const auto       idx  = static_cast<std::size_t>(num_buckets * mult);
         ensures(idx < num_buckets);
         return idx;
     }
