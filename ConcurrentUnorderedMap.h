@@ -288,6 +288,7 @@ private:
     static std::size_t get_bucket_index(std::size_t hash, std::size_t num_buckets) noexcept
     {
         // Hashing by multiplication
+        // https://en.wikipedia.org/wiki/Hash_table#Hashing_by_multiplication
         constexpr double phi  = 1.618033988749894848204;
         const auto       mult = mod1(bitsToDouble(hash) * phi);
         const auto       idx  = static_cast<std::size_t>(num_buckets * mult);
