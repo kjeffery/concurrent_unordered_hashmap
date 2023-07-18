@@ -12,7 +12,7 @@
 #define ensures(x) assert(x)
 
 template <typename Key, typename T>
-class ThreadSafeCache
+class ConcurrentUnorderedMap
 {
     enum class CreationType
     {
@@ -28,18 +28,18 @@ public:
     using reference       = value_type&;
     using const_reference = const value_type&;
 
-    explicit ThreadSafeCache(size_type bucket_count)
+    explicit ConcurrentUnorderedMap(size_type bucket_count)
     : m_buckets(std::max(bucket_count, size_type(1)))
     {
     }
 
-    ThreadSafeCache()
-    : ThreadSafeCache(k_default_bucket_count)
+    ConcurrentUnorderedMap()
+    : ConcurrentUnorderedMap(k_default_bucket_count)
     {
     }
 
     template <typename Iterator>
-    ThreadSafeCache(Iterator first, Iterator last, size_type bucket_count = k_default_bucket_count)
+    ConcurrentUnorderedMap(Iterator first, Iterator last, size_type bucket_count = k_default_bucket_count)
     : m_buckets(std::max(bucket_count, size_type(1)))
     {
         // TODO: implement
@@ -127,7 +127,7 @@ public:
     }
 
     // While technically thread-safe, use this with caution if there are other active threads.
-    void swap(ThreadSafeCache& other) noexcept
+    void swap(ConcurrentUnorderedMap& other) noexcept
     {
         // Write lock on bucket list.
         // Swap
