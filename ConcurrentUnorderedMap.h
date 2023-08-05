@@ -55,38 +55,152 @@ inline double bitsToDouble(uint32_t n) noexcept
     return bitsToDouble(static_cast<uint64_t>(n) << 32);
 }
 
-template <typename Key, typename T>
-class ConcurrentUnorderedMap
+template <typename T, typename U>
+struct GetKey
 {
-    struct DefaultConstruct
+    static T& get(std::pair<T, U>& v)
     {
-    };
+        return v.first;
+    }
 
+    static const T& get(const std::pair<T, U>& v)
+    {
+        return v.first;
+    }
+};
+
+template <typename T>
+struct GetKey<T, T>
+{
+    static T& get(T& v)
+    {
+        return v;
+    }
+
+    static const T& get(const T& v)
+    {
+        return v;
+    }
+};
+
+template <typename T, typename U>
+struct GetPrimaryValue
+{
+    static T& get(std::pair<T, U>& v)
+    {
+        return v.second;
+    }
+
+    static const T& get(const std::pair<T, U>& v)
+    {
+        return v.second;
+    }
+};
+
+template <typename T>
+struct GetPrimaryValue<T, T>
+{
+    static T& get(T& v)
+    {
+        return v;
+    }
+
+    static const T& get(const T& v)
+    {
+        return v;
+    }
+};
+
+template <typename Traits>
+class ConcurrentHashTable
+{
 public:
     using size_type       = std::size_t;
-    using hasher          = std::hash<Key>; // TODO: template
-    using value_type      = std::pair<const Key, T>;
+    using hasher          = typename Traits::hasher;
+    using primary_type    = typename Traits::primary_type;
+    using key_type        = typename Traits::key_type;
+    using value_type      = typename Traits::value_type;
     using reference       = value_type&;
     using const_reference = const value_type&;
 
-    explicit ConcurrentUnorderedMap(size_type bucket_count)
+protected:
+    using ElementList = std::forward_list<value_type>;
+
+public:
+    class iterator
+    {
+        using list_iterator = typename ElementList::iterator;
+
+        list_iterator        m_iterator;
+        ConcurrentHashTable* m_table{nullptr};
+        std::size_t          m_bucket_index;
+
+    public:
+        using iterator_category = typename std::iterator_traits<list_iterator>::iterator_category;
+        using difference_type   = typename std::iterator_traits<list_iterator>::difference_type;
+        using value_type        = typename std::iterator_traits<list_iterator>::value_type;
+        using pointer           = typename std::iterator_traits<list_iterator>::pointer;
+        using reference         = typename std::iterator_traits<list_iterator>::reference;
+
+        iterator() = default;
+
+        void safe_update(value_type v)
+        {
+            // Read lock on buckets
+            // Write lock on bucket list
+            // update value with std::move
+        }
+
+        // This is not a thread-safe way to update. Use safe_update to do so.
+        reference operator*() const noexcept
+        {
+            return *m_iterator;
+        }
+
+        pointer operator->() const noexcept
+        {
+            return m_iterator.operator->();
+        }
+
+        iterator operator++()
+        {
+            expects(m_table);
+            std::shared_lock<SharedMutex> list_lock(m_table->m_shared_list);
+            ++m_iterator;
+            return *this;
+        }
+
+        iterator operator++(int)
+        {
+            iterator result(*this);
+            this->   operator++();
+            return result;
+        }
+    };
+
+    class const_iterator
+    {
+
+    };
+
+    explicit ConcurrentHashTable(size_type bucket_count)
     : m_buckets(std::max(bucket_count, size_type(1)))
     {
     }
 
-    ConcurrentUnorderedMap()
-    : ConcurrentUnorderedMap(k_default_bucket_count)
+    ConcurrentHashTable()
+    : ConcurrentHashTable(k_default_bucket_count)
     {
     }
 
     template <typename Iterator>
-    ConcurrentUnorderedMap(Iterator first, Iterator last, size_type bucket_count = k_default_bucket_count)
+    ConcurrentHashTable(Iterator first, Iterator last, size_type bucket_count = k_default_bucket_count)
     : m_buckets(std::max(bucket_count, size_type(1)))
     {
         // TODO: implement
     }
 
-    void histogram()
+    void histogram() const
     {
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
 
@@ -99,86 +213,28 @@ public:
         }
     }
 
-    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
-    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
-    // references. I suggest you copy them or store them in const values.
-    template <typename F>
-    T& find_or_generate(const Key& key, F&& creator)
-    {
-        return find_or_create_impl<ConstructGenerator>(key, std::forward<F>(creator));
-    }
-
-    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
-    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
-    // references. I suggest you copy them or store them in const values.
-    T& find_or_create(const Key& key)
-    {
-        return find_or_create_impl<ConstructDefault>(key, DefaultConstruct{});
-    }
-
-    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
-    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
-    // references. I suggest you copy them or store them in const values.
-    T& find_or_create(const Key& key, T&& model)
-    {
-        return find_or_create_impl<ConstructMove>(key, std::forward<T>(model));
-    }
-
-    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
-    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
-    // references. I suggest you copy them or store them in const values.
-    T& find_or_create(const Key& key, const T& model)
-    {
-        return find_or_create_impl<ConstructCopy>(key, model);
-    }
-
-    // C++17: optional
-#if 0
-    const T& find(const Key& key) const
+    iterator find(const key_type& key)
     {
         // Read lock on bucket list
         // Read lock on linked list
 
         // Lookup value. If not there, throw
     }
-#endif
 
-    const T& at(const Key& key) const
+    const_iterator find(const key_type& key) const
     {
         // Read lock on bucket list
-        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
-
-        const auto bucket_count = m_buckets.size();
-        const auto bucket_idx   = get_bucket_index(hasher{}(key), bucket_count);
-
-        const LockingList& locking_list = m_buckets[bucket_idx];
-        const ElementList& element_list = locking_list.m_list;
-
         // Read lock on linked list
-        std::shared_lock<SharedMutex> list_lock(locking_list.m_mutex);
 
-        // Lookup value. If there, return
-        auto compare = [&key](const auto& r) { return r.first == key; };
-
-        const auto it = std::find_if(element_list.cbegin(), element_list.cend(), compare);
-        if (it == element_list.cend()) {
-            throw std::out_of_range{"No key for 'at'"};
-        }
-        return it->second;
+        // Lookup value. If not there, throw
     }
 
-    bool update(const Key& key, T value)
+    std::pair<iterator, bool> insert(const value_type& value)
     {
-        return update_impl(key, std::move(value));
-    }
-
-    bool update(const Key& key, T&& value)
-    {
-        return update_impl(key, std::forward<T>(value));
     }
 
     // While technically thread-safe, use this with caution if there are other active threads.
-    void swap(ConcurrentUnorderedMap& other) noexcept
+    void swap(ConcurrentHashTable& other) noexcept
     {
         // Write lock on bucket list.
         // Swap
@@ -233,44 +289,13 @@ public:
         rehash(static_cast<size_type>(std::ceil(element_count / max_load_factor())));
     }
 
-private:
+protected:
+    // Make the destructor protected so that we can inherit from it, but not be used virtually.
+    ~ConcurrentHashTable() = default;
+
     static constexpr size_type k_default_bucket_count{32};
 
     using SharedMutex = std::shared_timed_mutex;
-    using ElementList = std::forward_list<value_type>;
-
-    struct ConstructGenerator
-    {
-        template <typename F>
-        static void construct(ElementList& list, const Key& key, F&& creator)
-        {
-            list.emplace_front(key, std::forward<F>(creator)(key));
-        }
-    };
-
-    struct ConstructCopy
-    {
-        static void construct(ElementList& list, const Key& key, const T& model)
-        {
-            list.emplace_front(key, model);
-        }
-    };
-
-    struct ConstructMove
-    {
-        static void construct(ElementList& list, const Key& key, T&& model)
-        {
-            list.emplace_front(key, std::forward<T>(model));
-        }
-    };
-
-    struct ConstructDefault
-    {
-        static void construct(ElementList& list, const Key& key, DefaultConstruct)
-        {
-            list.emplace_front(key, T{});
-        }
-    };
 
     struct LockingList
     {
@@ -296,8 +321,18 @@ private:
         return idx;
     }
 
+    template <typename T>
+    std::pair<iterator, bool> insert_impl(T&& value)
+    {
+        // Read lock on bucket list
+        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+
+        const auto num_buckets = m_buckets.size();
+        const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
+    }
+
     template <typename Creator, typename F>
-    T& find_or_create_impl(const Key& key, F&& creator)
+    primary_type& find_or_create_impl(const key_type& key, F&& creator)
     {
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
@@ -351,7 +386,199 @@ private:
         return result.second;
     }
 
-    bool update_impl(const Key& key, T&& value)
+    mutable SharedMutex m_bucket_mutex;
+
+    std::atomic<float>       m_max_load_factor{1.0f};
+    std::atomic<std::size_t> m_num_elements{0};
+    BucketList               m_buckets;
+};
+
+template <typename Key>
+struct ConcurrentUnorderedSetTraits
+{
+    using key_type     = Key;
+    using primary_type = Key;
+    using hasher       = std::hash<Key>; // TODO: template
+    using value_type   = Key;
+};
+
+template <typename Key, typename T>
+class ConcurrentUnorderedSet : private ConcurrentHashTable<ConcurrentUnorderedSetTraits<Key>>
+{
+public:
+    using Traits       = ConcurrentUnorderedSetTraits<Key>;
+    using Base         = ConcurrentHashTable<Traits>;
+    using primary_type = T;
+    using Base::ElementList;
+    using Base::SharedMutex;
+
+private:
+    struct IdentityCopy
+    {
+        template <typename F>
+        static void construct(ElementList& list, const Key& key, F&& f)
+        {
+            std::forward<F>(f)();
+            list.emplace_front(key);
+        }
+    };
+
+    struct IdentityMove
+    {
+        template <typename F>
+        static void construct(ElementList& list, Key&& key, F&& f)
+        {
+            std::forward<F>(f)();
+            list.emplace_front(std::move(key));
+        }
+    };
+
+public:
+    template <typename F>
+    T& find_or_run_once(const Key& key, F&& f)
+    {
+        return Base::template find_or_create_impl<IdentityCopy>(key, std::forward<F>(creator));
+    }
+
+    // TODO: make sure find_or_create_impl takes Key rvalue references
+    template <typename F>
+    T& find_or_run_once(Key&& key, F&& f)
+    {
+        return Base::template find_or_create_impl<IdentityMove>(std::move(key), std::forward<F>(creator));
+    }
+};
+
+template <typename Key, typename T>
+struct ConcurrentUnorderedMapTraits
+{
+    using key_type     = Key;
+    using primary_type = T;
+    using hasher       = std::hash<Key>; // TODO: template
+    using value_type   = std::pair<const Key, T>;
+};
+
+template <typename Key, typename T>
+class ConcurrentUnorderedMap : private ConcurrentHashTable<ConcurrentUnorderedMapTraits<Key, T>>
+{
+public:
+    using Traits       = ConcurrentUnorderedMapTraits<Key, T>;
+    using Base         = ConcurrentHashTable<Traits>;
+    using primary_type = T;
+    using Base::ElementList;
+    using Base::SharedMutex;
+
+private:
+    struct DefaultConstruct
+    {
+    };
+
+    struct ConstructGenerator
+    {
+        template <typename F>
+        static void construct(ElementList& list, const Key& key, F&& creator)
+        {
+            list.emplace_front(key, std::forward<F>(creator)(key));
+        }
+    };
+
+    struct ConstructCopy
+    {
+        static void construct(ElementList& list, const Key& key, const T& model)
+        {
+            list.emplace_front(key, model);
+        }
+    };
+
+    struct ConstructMove
+    {
+        static void construct(ElementList& list, const Key& key, T&& model)
+        {
+            list.emplace_front(key, std::forward<T>(model));
+        }
+    };
+
+    struct ConstructDefault
+    {
+        static void construct(ElementList& list, const Key& key, DefaultConstruct)
+        {
+            list.emplace_front(key, T{});
+        }
+    };
+
+public:
+    using Base::Base;
+    using Base::histogram;
+    using Base::rehash;
+
+    const T& at(const Key& key) const
+    {
+        // Read lock on bucket list
+        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+
+        const auto bucket_count = m_buckets.size();
+        const auto bucket_idx   = get_bucket_index(hasher{}(key), bucket_count);
+
+        const LockingList& locking_list = m_buckets[bucket_idx];
+        const ElementList& element_list = locking_list.m_list;
+
+        // Read lock on linked list
+        std::shared_lock<SharedMutex> list_lock(locking_list.m_mutex);
+
+        // Lookup value. If there, return
+        auto compare = [&key](const auto& r) { return r.first == key; };
+
+        const auto it = std::find_if(element_list.cbegin(), element_list.cend(), compare);
+        if (it == element_list.cend()) {
+            throw std::out_of_range{"No key for 'at'"};
+        }
+        return it->second;
+    }
+
+    bool update(const Key& key, primary_type value)
+    {
+        return update_impl(key, std::move(value));
+    }
+
+    bool update(const Key& key, primary_type&& value)
+    {
+        return update_impl(key, std::forward<primary_type>(value));
+    }
+
+    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
+    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
+    // references. I suggest you copy them or store them in const values.
+    template <typename F>
+    T& find_or_generate(const Key& key, F&& creator)
+    {
+        return Base::template find_or_create_impl<ConstructGenerator>(key, std::forward<F>(creator));
+    }
+
+    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
+    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
+    // references. I suggest you copy them or store them in const values.
+    T& find_or_create(const Key& key)
+    {
+        return Base::template find_or_create_impl<ConstructDefault>(key, DefaultConstruct{});
+    }
+
+    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
+    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
+    // references. I suggest you copy them or store them in const values.
+    T& find_or_create(const Key& key, T&& model)
+    {
+        return Base::template find_or_create_impl<ConstructMove>(key, std::forward<T>(model));
+    }
+
+    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
+    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
+    // references. I suggest you copy them or store them in const values.
+    T& find_or_create(const Key& key, const T& model)
+    {
+        return Base::template find_or_create_impl<ConstructCopy>(key, model);
+    }
+
+private:
+    bool update_impl(const Key& key, primary_type&& value)
     {
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
@@ -377,10 +604,4 @@ private:
         }
         return false;
     }
-
-    mutable SharedMutex m_bucket_mutex;
-
-    std::atomic<float>       m_max_load_factor{1.0f};
-    std::atomic<std::size_t> m_num_elements{0};
-    BucketList               m_buckets;
 };
