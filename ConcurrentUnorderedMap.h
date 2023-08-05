@@ -133,7 +133,7 @@ public:
 
         list_iterator        m_iterator;
         ConcurrentHashTable* m_table{nullptr};
-        std::size_t          m_bucket_index;
+        std::size_t          m_bucket_index{std::numeric_limits<std::size_t>::max()};
 
     public:
         using iterator_category = typename std::iterator_traits<list_iterator>::iterator_category;
@@ -143,6 +143,18 @@ public:
         using reference         = typename std::iterator_traits<list_iterator>::reference;
 
         iterator() = default;
+
+        explicit iterator(ConcurrentHashTable& table)
+        : m_table(std::addressof(table))
+        {
+        }
+
+        iterator(ConcurrentHashTable& table, list_iterator iterator, std::size_t bucket_index)
+        : m_table(std::addressof(table))
+        , m_iterator(std::move(iterator))
+        , m_bucket_index(bucket_index)
+        {
+        }
 
         void safe_update(value_type v)
         {
@@ -176,11 +188,30 @@ public:
             this->   operator++();
             return result;
         }
+
+        friend bool operator==(const iterator& a, const iterator& b) noexcept
+        {
+            if (a.is_end_iterator() && b.is_end_iterator()) {
+                return true;
+            }
+            expects(a.m_table == b.m_table);
+            return a.m_iterator == b.m_iterator;
+        }
+
+        friend bool operator!=(const iterator& a, const iterator& b) noexcept
+        {
+            return !(a == b);
+        }
+
+    private:
+        bool is_end_iterator() const noexcept
+        {
+            return (m_table == nullptr) || (m_bucket_index >= m_table->size());
+        }
     };
 
     class const_iterator
     {
-
     };
 
     explicit ConcurrentHashTable(size_type bucket_count)
@@ -219,6 +250,7 @@ public:
         // Read lock on linked list
 
         // Lookup value. If not there, throw
+        return iterator{};
     }
 
     const_iterator find(const key_type& key) const
@@ -227,10 +259,12 @@ public:
         // Read lock on linked list
 
         // Lookup value. If not there, throw
+        return iterator{};
     }
 
     std::pair<iterator, bool> insert(const value_type& value)
     {
+        return std::make_pair(iterator{}, true);
     }
 
     // While technically thread-safe, use this with caution if there are other active threads.
@@ -332,7 +366,7 @@ protected:
     }
 
     template <typename Creator, typename F>
-    primary_type& find_or_create_impl(const key_type& key, F&& creator)
+    std::pair<iterator, bool> find_or_create_impl(const key_type& key, F&& creator)
     {
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
@@ -354,7 +388,7 @@ protected:
 
         auto it = std::find_if(element_list.begin(), element_list.end(), compare);
         if (it != element_list.cend()) {
-            return it->second;
+            return std::make_pair(iterator{*this, it, bucket_idx}, false);
         }
 
         // Else create
@@ -363,7 +397,7 @@ protected:
         Creator::construct(element_list, key, std::forward<F>(creator));
 
         // emplace_front does not return anything until C++17, so do it the hard way...
-        auto& result = element_list.front();
+        auto& result = element_list.begin();
 
         const std::size_t num_elements    = ++m_num_elements;
         const auto        max_load_factor = m_max_load_factor.load(); // Only do atomic load once...
@@ -383,7 +417,7 @@ protected:
             rehash(std::max(num_buckets * 3u / 2u, load_factor_required_buckets * 2u));
         }
 
-        return result.second;
+        return std::make_pair(iterator{*this, result, bucket_idx}, true);
     }
 
     mutable SharedMutex m_bucket_mutex;
@@ -435,14 +469,14 @@ private:
 
 public:
     template <typename F>
-    T& find_or_run_once(const Key& key, F&& f)
+    decltype(auto) insert_and_run(const Key& key, F&& f)
     {
         return Base::template find_or_create_impl<IdentityCopy>(key, std::forward<F>(creator));
     }
 
     // TODO: make sure find_or_create_impl takes Key rvalue references
     template <typename F>
-    T& find_or_run_once(Key&& key, F&& f)
+    decltype(auto) insert_and_run(Key&& key, F&& f)
     {
         return Base::template find_or_create_impl<IdentityMove>(std::move(key), std::forward<F>(creator));
     }
@@ -548,7 +582,7 @@ public:
     // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
     // references. I suggest you copy them or store them in const values.
     template <typename F>
-    T& find_or_generate(const Key& key, F&& creator)
+    decltype(auto) generate(const Key& key, F&& creator)
     {
         return Base::template find_or_create_impl<ConstructGenerator>(key, std::forward<F>(creator));
     }
@@ -556,26 +590,34 @@ public:
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
     // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
     // references. I suggest you copy them or store them in const values.
-    T& find_or_create(const Key& key)
+    T& operator[](const Key& key)
     {
-        return Base::template find_or_create_impl<ConstructDefault>(key, DefaultConstruct{});
+        auto result = Base::template find_or_create_impl<ConstructDefault>(key, DefaultConstruct{});
+        return *result.first;
+    }
+
+    T& operator[](Key&& key)
+    {
+        auto result = Base::template find_or_create_impl<ConstructDefault>(std::forward<Key>(key), DefaultConstruct{});
+        return *result.first;
     }
 
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
     // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
     // references. I suggest you copy them or store them in const values.
-    T& find_or_create(const Key& key, T&& model)
+    decltype(auto) insert(const value_type& value)
     {
-        return Base::template find_or_create_impl<ConstructMove>(key, std::forward<T>(model));
+        return Base::template find_or_create_impl<ConstructCopy>(value.first, value.second);
+    }
+
+    decltype(auto) insert(value_type&& value)
+    {
+        return Base::template find_or_create_impl<ConstructMove>(value.first, std::forward<T>(value.second));
     }
 
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
     // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
     // references. I suggest you copy them or store them in const values.
-    T& find_or_create(const Key& key, const T& model)
-    {
-        return Base::template find_or_create_impl<ConstructCopy>(key, model);
-    }
 
 private:
     bool update_impl(const Key& key, primary_type&& value)
