@@ -470,6 +470,10 @@ protected:
 
         auto it = std::find_if(element_list.begin(), element_list.end(), compare);
         if (it != element_list.cend()) {
+            // We can unlock before we create the iterator, because our list iterator will not be invalidated, and the
+            // debug iterator does some check that require locks, leading to deadlock if we don't unlock.
+            list_lock.unlock();
+            bucket_lock.unlock();
             return std::make_pair(iterator{*this, it}, false);
         }
 
@@ -481,15 +485,17 @@ protected:
         // emplace_front does not return anything until C++17, so do it the hard way...
         auto& result = element_list.begin();
 
-        const std::size_t num_elements    = ++m_num_elements;
-        const auto        max_load_factor = m_max_load_factor.load(); // Only do atomic load once...
+        // We're already locked: we can do relaxed memory semantics.
+        const std::size_t num_elements = m_num_elements.fetch_add(1u, std::memory_order_relaxed) + 1u;
+        const auto max_load_factor = m_max_load_factor.load(std::memory_order_relaxed); // Only do atomic load once...
+
+        // We can unlock before we create the iterator, because our list iterator will not be invalidated, and the
+        // debug iterator does some check that require locks, leading to deadlock if we don't unlock.
+        // We also want to unlock before we rehash.
+        list_lock.unlock();
+        bucket_lock.unlock();
+
         if (num_elements > max_load_factor * num_buckets) {
-            // Unlock list
-            list_lock.unlock();
-
-            // Unlock bucket
-            bucket_lock.unlock();
-
             // 1. load_factor = num_elements / num_buckets
             // 2. num_buckets * load_factor = num_elements
             // 3. num_buckets = num_elements / load_factor
@@ -504,9 +510,9 @@ protected:
 
     mutable SharedMutex m_bucket_mutex;
 
-    std::atomic<float>       m_max_load_factor{1.0f};
+    std::atomic<float>     m_max_load_factor{1.0f};
     std::atomic<size_type> m_num_elements{0};
-    BucketList               m_buckets;
+    BucketList             m_buckets;
 };
 
 template <typename Key>
