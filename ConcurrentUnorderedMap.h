@@ -58,12 +58,12 @@ inline double bitsToDouble(uint32_t n) noexcept
 template <typename T, typename U>
 struct GetKey
 {
-    static T& get(std::pair<T, U>& v)
+    static T& get(std::pair<const T, U>& v)
     {
         return v.first;
     }
 
-    static const T& get(const std::pair<T, U>& v)
+    static const T& get(const std::pair<const T, U>& v)
     {
         return v.first;
     }
@@ -86,12 +86,12 @@ struct GetKey<T, T>
 template <typename T, typename U>
 struct GetPrimaryValue
 {
-    static T& get(std::pair<T, U>& v)
+    static T& get(std::pair<const T, U>& v)
     {
         return v.second;
     }
 
-    static const T& get(const std::pair<T, U>& v)
+    static const T& get(const std::pair<const T, U>& v)
     {
         return v.second;
     }
@@ -127,13 +127,15 @@ protected:
     using ElementList = std::forward_list<value_type>;
 
 public:
+    friend class iterator;
+    friend class const_iterator;
+
     class iterator
     {
         using list_iterator = typename ElementList::iterator;
 
         list_iterator        m_iterator;
         ConcurrentHashTable* m_table{nullptr};
-        std::size_t          m_bucket_index{std::numeric_limits<std::size_t>::max()};
 
     public:
         using iterator_category = typename std::iterator_traits<list_iterator>::iterator_category;
@@ -144,16 +146,19 @@ public:
 
         iterator() = default;
 
+        // TODO: private
         explicit iterator(ConcurrentHashTable& table)
         : m_table(std::addressof(table))
         {
+            ensures(is_valid_iterator());
         }
 
-        iterator(ConcurrentHashTable& table, list_iterator iterator, std::size_t bucket_index)
+        // TODO: private
+        iterator(ConcurrentHashTable& table, list_iterator iterator)
         : m_table(std::addressof(table))
         , m_iterator(std::move(iterator))
-        , m_bucket_index(bucket_index)
         {
+            expects(is_valid_iterator());
         }
 
         void safe_update(value_type v)
@@ -174,11 +179,53 @@ public:
             return m_iterator.operator->();
         }
 
+        // Incrementing an end iterator results in undefined behavior.
         iterator operator++()
         {
             expects(m_table);
-            std::shared_lock<SharedMutex> list_lock(m_table->m_shared_list);
-            ++m_iterator;
+            expects(!is_end_iterator());
+            expects(is_valid_iterator());
+
+            std::shared_lock<SharedMutex> bucket_lock(m_table->m_bucket_mutex);
+            const auto                    num_buckets = m_table->m_buckets.size();
+            auto                          bucket_idx  = get_bucket_index(bucket_lock);
+
+            // In the first step, we try to increment our iterator along our current list.
+            {
+                const auto&                   locking_list = m_table->m_buckets[bucket_idx].m_list;
+                std::shared_lock<SharedMutex> list_lock(m_table->m_buckets[bucket_idx].m_mutex);
+                ++m_iterator;
+                if (m_iterator != locking_list.end()) {
+                    return *this;
+                } else {
+                    // Potentially set up for next step, or find the end of the bucket list.
+                    ++bucket_idx;
+                    if (bucket_idx >= num_buckets) {
+                        return *this;
+                    }
+                }
+            }
+
+            // If incrementing along the list was unsuccessful, the next step is to go along the buckets until we find a
+            // non-empty list. We're only interested in the begin iterator of each list.
+            while (true) {
+                const auto&                   locking_list = m_table->m_buckets[bucket_idx].m_list;
+                std::shared_lock<SharedMutex> list_lock(m_table->m_buckets[bucket_idx].m_mutex);
+
+                m_iterator = locking_list.begin();
+                if (m_iterator == locking_list.end()) {
+                    ++bucket_idx;
+                    if (bucket_idx >= num_buckets) {
+                        // End iterator
+                        break;
+                    }
+                } else {
+                    // Valid iterator
+                    break;
+                }
+            }
+
+            ensures(is_valid_iterator());
             return *this;
         }
 
@@ -203,10 +250,47 @@ public:
             return !(a == b);
         }
 
-    private:
-        bool is_end_iterator() const noexcept
+        bool is_valid_iterator() const noexcept
         {
-            return (m_table == nullptr) || (m_bucket_index >= m_table->size());
+            std::shared_lock<SharedMutex> bucket_lock(m_table->m_bucket_mutex);
+            return is_valid_iterator(bucket_lock);
+        }
+
+    private:
+        template <typename LockType>
+        bool is_end_iterator(const LockType& bucket_lock) const noexcept
+        {
+            expects(bucket_lock.owns_lock());
+            return (m_table == nullptr) || (get_bucket_index(bucket_lock) >= m_table->m_buckets.size());
+        }
+
+        template <typename LockType>
+        bool is_valid_iterator(const LockType& bucket_lock) const noexcept
+        {
+            expects(bucket_lock.owns_lock());
+            if (is_end_iterator(bucket_lock)) {
+                return true;
+            }
+
+            const auto bucket_idx = get_bucket_index(bucket_lock);
+
+            // Get bucket list
+            const auto&                   locking_list = m_table->m_buckets[bucket_idx].m_list;
+            std::shared_lock<SharedMutex> list_lock(m_table->m_buckets[bucket_idx].m_mutex);
+
+            return m_iterator != locking_list.end();
+        }
+
+        template <typename LockType>
+        std::size_t get_bucket_index(const LockType& bucket_lock) const noexcept
+        {
+            // We can't store the bucket index because we unlock when we're idle and the table may have been rehashed.
+            expects(bucket_lock.owns_lock());
+            expects(m_table);
+
+            const auto  bucket_count = m_table->m_buckets.size();
+            const auto& key          = GetKey<key_type, primary_type>::get(*m_iterator);
+            return ConcurrentHashTable::get_bucket_index(hasher{}(key), bucket_count);
         }
     };
 
@@ -323,6 +407,12 @@ public:
         rehash(static_cast<size_type>(std::ceil(element_count / max_load_factor())));
     }
 
+    // This is a departure from std::unordered_map in that they don't have a size function.
+    size_type size() const noexcept
+    {
+        return m_num_elements;
+    }
+
 protected:
     // Make the destructor protected so that we can inherit from it, but not be used virtually.
     ~ConcurrentHashTable() = default;
@@ -388,7 +478,7 @@ protected:
 
         auto it = std::find_if(element_list.begin(), element_list.end(), compare);
         if (it != element_list.cend()) {
-            return std::make_pair(iterator{*this, it, bucket_idx}, false);
+            return std::make_pair(iterator{*this, it}, false);
         }
 
         // Else create
@@ -417,13 +507,13 @@ protected:
             rehash(std::max(num_buckets * 3u / 2u, load_factor_required_buckets * 2u));
         }
 
-        return std::make_pair(iterator{*this, result, bucket_idx}, true);
+        return std::make_pair(iterator{*this, result}, true);
     }
 
     mutable SharedMutex m_bucket_mutex;
 
     std::atomic<float>       m_max_load_factor{1.0f};
-    std::atomic<std::size_t> m_num_elements{0};
+    std::atomic<size_type> m_num_elements{0};
     BucketList               m_buckets;
 };
 
