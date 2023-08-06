@@ -55,61 +55,53 @@ inline double bitsToDouble(uint32_t n) noexcept
     return bitsToDouble(static_cast<uint64_t>(n) << 32);
 }
 
-template <typename T, typename U>
-struct GetKey
-{
-    static T& get(std::pair<const T, U>& v)
-    {
-        return v.first;
-    }
-
-    static const T& get(const std::pair<const T, U>& v)
-    {
-        return v.first;
-    }
-};
-
 template <typename T>
-struct GetKey<T, T>
+inline T& get_key(T& v) noexcept
 {
-    static T& get(T& v)
-    {
-        return v;
-    }
-
-    static const T& get(const T& v)
-    {
-        return v;
-    }
-};
+    return v;
+}
 
 template <typename T, typename U>
-struct GetPrimaryValue
+inline T& get_key(std::pair<T, U>& v) noexcept
 {
-    static T& get(std::pair<const T, U>& v)
-    {
-        return v.second;
-    }
-
-    static const T& get(const std::pair<const T, U>& v)
-    {
-        return v.second;
-    }
-};
+    return v.first;
+}
 
 template <typename T>
-struct GetPrimaryValue<T, T>
+inline const T& get_key(const T& v) noexcept
 {
-    static T& get(T& v)
-    {
-        return v;
-    }
+    return v;
+}
 
-    static const T& get(const T& v)
-    {
-        return v;
-    }
-};
+template <typename T, typename U>
+inline const T& get_key(const std::pair<T, U>& v) noexcept
+{
+    return v.first;
+}
+
+template <typename T>
+inline T& get_value(T& v) noexcept
+{
+    return v;
+}
+
+template <typename T, typename U>
+inline T& get_value(std::pair<T, U>& v) noexcept
+{
+    return v.second;
+}
+
+template <typename T>
+inline const T& get_value(const T& v) noexcept
+{
+    return v;
+}
+
+template <typename T, typename U>
+inline const T& get_value(const std::pair<T, U>& v) noexcept
+{
+    return v.second;
+}
 
 template <typename Traits>
 class ConcurrentHashTable
@@ -289,7 +281,7 @@ public:
             expects(m_table);
 
             const auto  bucket_count = m_table->m_buckets.size();
-            const auto& key          = GetKey<key_type, primary_type>::get(*m_iterator);
+            const auto& key          = get_key(*m_iterator);
             return ConcurrentHashTable::get_bucket_index(hasher{}(key), bucket_count);
         }
     };
