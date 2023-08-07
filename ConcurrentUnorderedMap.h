@@ -524,13 +524,13 @@ struct ConcurrentUnorderedSetTraits
     using value_type   = Key;
 };
 
-template <typename Key, typename T>
+template <typename Key>
 class ConcurrentUnorderedSet : private ConcurrentHashTable<ConcurrentUnorderedSetTraits<Key>>
 {
 public:
     using Traits       = ConcurrentUnorderedSetTraits<Key>;
     using Base         = ConcurrentHashTable<Traits>;
-    using primary_type = T;
+    using primary_type = Key;
     using Base::ElementList;
     using Base::SharedMutex;
 
@@ -698,14 +698,13 @@ public:
         return Base::template find_or_create_impl<ConstructCopy>(value.first, value.second);
     }
 
+    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
+    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
+    // references. I suggest you copy them or store them in const values.
     decltype(auto) insert(value_type&& value)
     {
         return Base::template find_or_create_impl<ConstructMove>(value.first, std::forward<T>(value.second));
     }
-
-    // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
-    // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
-    // references. I suggest you copy them or store them in const values.
 
 private:
     bool update_impl(const Key& key, primary_type&& value)
