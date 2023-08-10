@@ -421,35 +421,6 @@ protected:
 
     using BucketList = std::vector<LockingList>;
 
-    struct NoOp
-    {
-    };
-
-    struct ConstructCopy
-    {
-        static void construct(ElementList& list, const key_type& key, const value_type& model)
-        {
-            list.emplace_front(key, model);
-        }
-    };
-
-    struct ConstructMove
-    {
-        static void construct(ElementList& list, const key_type& key, value_type&& model)
-        {
-            list.emplace_front(key, std::forward<value_type>(model));
-        }
-    };
-
-    struct ConstructDefault
-    {
-        static void construct(ElementList& list, const key_type& key, NoOp)
-        {
-            list.emplace_front(key, value_type{});
-        }
-    };
-
-
     static double mod1(double x) noexcept
     {
         return x - std::floor(x);
@@ -476,8 +447,8 @@ protected:
         const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
     }
 
-    template <typename Creator, typename F>
-    std::pair<iterator, bool> find_or_create_impl(const key_type& key, F&& creator)
+    template <typename Creator, typename... Args>
+    std::pair<iterator, bool> find_or_create_impl(const key_type& key, Args&&... args)
     {
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
@@ -509,7 +480,7 @@ protected:
         // Else create
         // No sentinel needed: we have a write lock
 
-        Creator::construct(element_list, key, std::forward<F>(creator));
+        Creator::construct(element_list, key, std::forward<Args>(args)...);
 
         // emplace_front does not return anything until C++17, so do it the hard way...
         auto& result = element_list.begin();
@@ -588,14 +559,14 @@ public:
     template <typename F>
     decltype(auto) insert_and_run(const Key& key, F&& f)
     {
-        return Base::template find_or_create_impl<IdentityCopy>(key, std::forward<F>(creator));
+        return Base::template find_or_create_impl<IdentityCopy>(key, std::forward<F>(f));
     }
 
     // TODO: make sure find_or_create_impl takes Key rvalue references
     template <typename F>
     decltype(auto) insert_and_run(Key&& key, F&& f)
     {
-        return Base::template find_or_create_impl<IdentityMove>(std::move(key), std::forward<F>(creator));
+        return Base::template find_or_create_impl<IdentityMove>(std::move(key), std::forward<F>(f));
     }
 };
 
@@ -625,6 +596,30 @@ private:
         static void construct(ElementList& list, const Key& key, F&& creator)
         {
             list.emplace_front(key, std::forward<F>(creator)(key));
+        }
+    };
+
+    struct ConstructCopy
+    {
+        static void construct(ElementList& list, const key_type& key, const primary_type& model)
+        {
+            list.emplace_front(key, model);
+        }
+    };
+
+    struct ConstructMove
+    {
+        static void construct(ElementList& list, const key_type& key, primary_type&& model)
+        {
+            list.emplace_front(key, std::forward<primary_type>(model));
+        }
+    };
+
+    struct ConstructDefault
+    {
+        static void construct(ElementList& list, const primary_type& key)
+        {
+            list.emplace_front(key, primary_type{});
         }
     };
 
@@ -681,13 +676,13 @@ public:
     // references. I suggest you copy them or store them in const values.
     T& operator[](const Key& key)
     {
-        auto result = Base::template find_or_create_impl<ConstructDefault>(key, NoOp{});
+        auto result = Base::template find_or_create_impl<ConstructDefault>(key);
         return *result.first;
     }
 
     T& operator[](Key&& key)
     {
-        auto result = Base::template find_or_create_impl<ConstructDefault>(std::forward<Key>(key), NoOp{});
+        auto result = Base::template find_or_create_impl<ConstructDefault>(std::forward<Key>(key));
         return *result.first;
     }
 
