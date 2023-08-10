@@ -421,6 +421,35 @@ protected:
 
     using BucketList = std::vector<LockingList>;
 
+    struct NoOp
+    {
+    };
+
+    struct ConstructCopy
+    {
+        static void construct(ElementList& list, const key_type& key, const value_type& model)
+        {
+            list.emplace_front(key, model);
+        }
+    };
+
+    struct ConstructMove
+    {
+        static void construct(ElementList& list, const key_type& key, value_type&& model)
+        {
+            list.emplace_front(key, std::forward<value_type>(model));
+        }
+    };
+
+    struct ConstructDefault
+    {
+        static void construct(ElementList& list, const key_type& key, NoOp)
+        {
+            list.emplace_front(key, value_type{});
+        }
+    };
+
+
     static double mod1(double x) noexcept
     {
         return x - std::floor(x);
@@ -590,40 +619,12 @@ public:
     using Base::SharedMutex;
 
 private:
-    struct DefaultConstruct
-    {
-    };
-
     struct ConstructGenerator
     {
         template <typename F>
         static void construct(ElementList& list, const Key& key, F&& creator)
         {
             list.emplace_front(key, std::forward<F>(creator)(key));
-        }
-    };
-
-    struct ConstructCopy
-    {
-        static void construct(ElementList& list, const Key& key, const T& model)
-        {
-            list.emplace_front(key, model);
-        }
-    };
-
-    struct ConstructMove
-    {
-        static void construct(ElementList& list, const Key& key, T&& model)
-        {
-            list.emplace_front(key, std::forward<T>(model));
-        }
-    };
-
-    struct ConstructDefault
-    {
-        static void construct(ElementList& list, const Key& key, DefaultConstruct)
-        {
-            list.emplace_front(key, T{});
         }
     };
 
@@ -680,13 +681,13 @@ public:
     // references. I suggest you copy them or store them in const values.
     T& operator[](const Key& key)
     {
-        auto result = Base::template find_or_create_impl<ConstructDefault>(key, DefaultConstruct{});
+        auto result = Base::template find_or_create_impl<ConstructDefault>(key, NoOp{});
         return *result.first;
     }
 
     T& operator[](Key&& key)
     {
-        auto result = Base::template find_or_create_impl<ConstructDefault>(std::forward<Key>(key), DefaultConstruct{});
+        auto result = Base::template find_or_create_impl<ConstructDefault>(std::forward<Key>(key), NoOp{});
         return *result.first;
     }
 
