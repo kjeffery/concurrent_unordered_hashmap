@@ -338,11 +338,6 @@ public:
         return iterator{};
     }
 
-    std::pair<iterator, bool> insert(const value_type& value)
-    {
-        return std::make_pair(iterator{}, true);
-    }
-
     // While technically thread-safe, use this with caution if there are other active threads.
     void swap(ConcurrentHashTable& other) noexcept
     {
@@ -384,7 +379,7 @@ public:
         for (auto& bucket : m_buckets) {
             ElementList& old_list = bucket.m_list;
             while (!old_list.empty()) {
-                const auto   hash           = hasher{}(old_list.cbegin()->first);
+                const auto   hash           = hasher{}(get_key(old_list.front()));
                 const auto   new_bucket_idx = get_bucket_index(hash, new_bucket_count);
                 ElementList& new_list       = new_locking_list[new_bucket_idx].m_list;
                 new_list.splice_after(new_list.cbefore_begin(), old_list, old_list.cbefore_begin());
@@ -447,8 +442,8 @@ protected:
         const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
     }
 
-    template <typename Creator, typename... Args>
-    std::pair<iterator, bool> find_or_create_impl(const key_type& key, Args&&... args)
+    template <typename Creator, typename Value, typename... Args>
+    std::pair<iterator, bool> find_or_create_impl(Value&& key, Args&&... args)
     {
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
@@ -466,7 +461,7 @@ protected:
 
         // Lookup value. If there, return
 
-        auto compare = [&key](const auto& r) { return r.first == key; };
+        auto compare = [&key](const auto& r) { return get_key(r) == key; };
 
         auto it = std::find_if(element_list.begin(), element_list.end(), compare);
         if (it != element_list.cend()) {
@@ -480,7 +475,7 @@ protected:
         // Else create
         // No sentinel needed: we have a write lock
 
-        Creator::construct(element_list, key, std::forward<Args>(args)...);
+        Creator::construct(element_list, std::forward<Value>(key), std::forward<Args>(args)...);
 
         // emplace_front does not return anything until C++17, so do it the hard way...
         auto& result = element_list.begin();
@@ -555,7 +550,33 @@ private:
         }
     };
 
+    struct ConstructCopy
+    {
+        static void construct(ElementList& list, const key_type& key)
+        {
+            list.emplace_front(key);
+        }
+    };
+
+    struct ConstructMove
+    {
+        static void construct(ElementList& list, key_type&& key)
+        {
+            list.emplace_front(std::forward<primary_type>(key));
+        }
+    };
+
 public:
+    std::pair<iterator, bool> insert(const value_type& value)
+    {
+        return Base::template find_or_create_impl<ConstructCopy>(value.first);
+    }
+
+    std::pair<iterator, bool> insert(value_type&& value)
+    {
+        return Base::template find_or_create_impl<ConstructMove>(std::forward<value_type>(value));
+    }
+
     template <typename F>
     decltype(auto) insert_and_run(const Key& key, F&& f)
     {
@@ -689,7 +710,7 @@ public:
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
     // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
     // references. I suggest you copy them or store them in const values.
-    decltype(auto) insert(const value_type& value)
+    std::pair<iterator, bool> insert(const value_type& value)
     {
         return Base::template find_or_create_impl<ConstructCopy>(value.first, value.second);
     }
@@ -697,7 +718,7 @@ public:
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
     // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
     // references. I suggest you copy them or store them in const values.
-    decltype(auto) insert(value_type&& value)
+    std::pair<iterator, bool> insert(value_type&& value)
     {
         return Base::template find_or_create_impl<ConstructMove>(value.first, std::forward<T>(value.second));
     }
