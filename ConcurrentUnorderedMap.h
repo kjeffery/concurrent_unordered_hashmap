@@ -505,20 +505,20 @@ protected:
     BucketList             m_buckets;
 };
 
-template <typename Key>
+template <typename Key, typename Hash>
 struct ConcurrentUnorderedSetTraits
 {
     using key_type     = Key;
     using primary_type = Key;
-    using hasher       = std::hash<Key>; // TODO: template
+    using hasher       = Hash;
     using value_type   = Key;
 };
 
-template <typename Key>
-class ConcurrentUnorderedSet : private ConcurrentHashTable<ConcurrentUnorderedSetTraits<Key>>
+template <typename Key, typename Hash = std::hash<Key>>
+class ConcurrentUnorderedSet : private ConcurrentHashTable<ConcurrentUnorderedSetTraits<Key, Hash>>
 {
 public:
-    using Traits       = ConcurrentUnorderedSetTraits<Key>;
+    using Traits       = ConcurrentUnorderedSetTraits<Key, Hash>;
     using Base         = ConcurrentHashTable<Traits>;
     using primary_type = Key;
     using Base::ElementList;
@@ -587,20 +587,20 @@ public:
     }
 };
 
-template <typename Key, typename T>
+template <typename Key, typename T, typename Hash>
 struct ConcurrentUnorderedMapTraits
 {
     using key_type     = Key;
     using primary_type = T;
-    using hasher       = std::hash<Key>; // TODO: template
+    using hasher       = Hash;
     using value_type   = std::pair<const Key, T>;
 };
 
-template <typename Key, typename T>
-class ConcurrentUnorderedMap : private ConcurrentHashTable<ConcurrentUnorderedMapTraits<Key, T>>
+template <typename Key, typename T, typename Hash = std::hash<Key>>
+class ConcurrentUnorderedMap : private ConcurrentHashTable<ConcurrentUnorderedMapTraits<Key, T, Hash>>
 {
 public:
-    using Traits       = ConcurrentUnorderedMapTraits<Key, T>;
+    using Traits       = ConcurrentUnorderedMapTraits<Key, T, Hash>;
     using Base         = ConcurrentHashTable<Traits>;
     using primary_type = T;
     using Base::ElementList;
