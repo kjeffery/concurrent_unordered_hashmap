@@ -578,14 +578,14 @@ public:
     }
 
     template <typename F>
-    decltype(auto) insert_and_run(const Key& key, F&& f)
+    std::pair<iterator, bool> insert_and_run(const Key& key, F&& f)
     {
         return Base::template find_or_create_impl<IdentityCopy>(key, std::forward<F>(f));
     }
 
     // TODO: make sure find_or_create_impl takes Key rvalue references
     template <typename F>
-    decltype(auto) insert_and_run(Key&& key, F&& f)
+    std::pair<iterator, bool> insert_and_run(Key&& key, F&& f)
     {
         return Base::template find_or_create_impl<IdentityMove>(std::move(key), std::forward<F>(f));
     }
