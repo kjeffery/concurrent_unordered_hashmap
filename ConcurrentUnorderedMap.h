@@ -16,13 +16,8 @@ inline ReturnType bitCast(OriginalType val) noexcept
 {
     static_assert(sizeof(ReturnType) == sizeof(OriginalType), "Types must be of the same size.");
 
-    union
-    {
-        OriginalType in;
-        ReturnType   out;
-    };
-
-    in = val;
+    ReturnType out;
+    std::memcpy(&out, &val, sizeof(ReturnType));
     return out;
 }
 
@@ -545,6 +540,7 @@ private:
         template <typename F>
         static void construct(ElementList& list, Key&& key, F&& f)
         {
+            // TODO: move the function call to after the emplace and pass the new element as argument?
             std::forward<F>(f)();
             list.emplace_front(std::move(key));
         }
@@ -562,7 +558,7 @@ private:
     {
         static void construct(ElementList& list, key_type&& key)
         {
-            list.emplace_front(std::forward<primary_type>(key));
+            list.emplace_front(std::move(key));
         }
     };
 
@@ -574,7 +570,7 @@ public:
 
     std::pair<iterator, bool> insert(value_type&& value)
     {
-        return Base::template find_or_create_impl<ConstructMove>(std::forward<value_type>(value));
+        return Base::template find_or_create_impl<ConstructMove>(std::move(value));
     }
 
     template <typename F>
@@ -632,7 +628,7 @@ private:
     {
         static void construct(ElementList& list, const key_type& key, primary_type&& model)
         {
-            list.emplace_front(key, std::forward<primary_type>(model));
+            list.emplace_front(key, std::move(model));
         }
     };
 
@@ -680,7 +676,7 @@ public:
 
     bool update(const Key& key, primary_type&& value)
     {
-        return update_impl(key, std::forward<primary_type>(value));
+        return update_impl(key, std::move(value));
     }
 
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
@@ -703,7 +699,7 @@ public:
 
     T& operator[](Key&& key)
     {
-        auto result = Base::template find_or_create_impl<ConstructDefault>(std::forward<Key>(key));
+        auto result = Base::template find_or_create_impl<ConstructDefault>(std::move(key));
         return *result.first;
     }
 
@@ -720,7 +716,7 @@ public:
     // references. I suggest you copy them or store them in const values.
     std::pair<iterator, bool> insert(value_type&& value)
     {
-        return Base::template find_or_create_impl<ConstructMove>(value.first, std::forward<T>(value.second));
+        return Base::template find_or_create_impl<ConstructMove>(value.first, std::move(value.second));
     }
 
 private:
