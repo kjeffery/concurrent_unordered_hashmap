@@ -107,6 +107,7 @@ class ConcurrentHashTable
 public:
     using size_type       = std::size_t;
     using hasher          = typename Traits::hasher;
+    using key_equal       = typename Traits::key_equal;
     using primary_type    = typename Traits::primary_type;
     using key_type        = typename Traits::key_type;
     using value_type      = typename Traits::value_type;
@@ -450,7 +451,7 @@ protected:
 
         // Lookup value. If there, return
 
-        auto compare = [&key](const auto& r) { return get_key(r) == key; };
+        auto compare = [&key](const auto& r) { return key_equal{}(get_key(r), key); };
 
         auto it = std::find_if(element_list.begin(), element_list.end(), compare);
         if (it != element_list.cend()) {
@@ -499,25 +500,27 @@ protected:
     BucketList             m_buckets;
 };
 
-template <typename Key, typename Hash>
+template <typename Key, typename Hash, typename KeyEqual>
 struct ConcurrentUnorderedSetTraits
 {
     using key_type     = Key;
     using primary_type = Key;
     using hasher       = Hash;
+    using key_equal    = KeyEqual;
     using value_type   = Key;
 };
 
-template <typename Key, typename Hash = std::hash<Key>>
-class ConcurrentUnorderedSet : private ConcurrentHashTable<ConcurrentUnorderedSetTraits<Key, Hash>>
+template <typename Key, typename Hash = std::hash<Key>, typename KeyEqual = std::equal_to<Key>>
+class ConcurrentUnorderedSet : private ConcurrentHashTable<ConcurrentUnorderedSetTraits<Key, Hash, KeyEqual>>
 {
 public:
-    using Traits         = ConcurrentUnorderedSetTraits<Key, Hash>;
+    using Traits         = ConcurrentUnorderedSetTraits<Key, Hash, KeyEqual>;
     using Base           = ConcurrentHashTable<Traits>;
     using key_type       = typename Traits::key_type;
     using value_type     = typename Traits::value_type;
     using primary_type   = Key;
     using hasher         = typename Traits::hasher;
+    using key_equal      = typename Traits::key_equal;
     using iterator       = typename Base::iterator;
     using const_iterator = typename Base::const_iterator;
     using ElementList    = typename Base::ElementList;
@@ -587,25 +590,27 @@ public:
     }
 };
 
-template <typename Key, typename T, typename Hash>
+template <typename Key, typename T, typename Hash, typename KeyEqual>
 struct ConcurrentUnorderedMapTraits
 {
     using key_type     = Key;
     using primary_type = T;
     using hasher       = Hash;
+    using key_equal    = KeyEqual;
     using value_type   = std::pair<const Key, T>;
 };
 
-template <typename Key, typename T, typename Hash = std::hash<Key>>
-class ConcurrentUnorderedMap : private ConcurrentHashTable<ConcurrentUnorderedMapTraits<Key, T, Hash>>
+template <typename Key, typename T, typename Hash = std::hash<Key>, typename KeyEqual = std::equal_to<Key>>
+class ConcurrentUnorderedMap : private ConcurrentHashTable<ConcurrentUnorderedMapTraits<Key, T, Hash, KeyEqual>>
 {
 public:
-    using Traits         = ConcurrentUnorderedMapTraits<Key, T, Hash>;
+    using Traits         = ConcurrentUnorderedMapTraits<Key, T, Hash, KeyEqual>;
     using Base           = ConcurrentHashTable<Traits>;
     using key_type       = typename Traits::key_type;
     using value_type     = typename Traits::value_type;
     using primary_type   = typename Traits::primary_type;
     using hasher         = typename Traits::hasher;
+    using key_equal      = typename Traits::key_equal;
     using iterator       = typename Base::iterator;
     using const_iterator = typename Base::const_iterator;
     using ElementList    = typename Base::ElementList;
