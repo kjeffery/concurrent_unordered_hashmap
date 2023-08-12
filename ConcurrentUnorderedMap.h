@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cmath>
@@ -429,16 +430,6 @@ protected:
         return idx;
     }
 
-    template <typename T>
-    std::pair<iterator, bool> insert_impl(T&& value)
-    {
-        // Read lock on bucket list
-        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
-
-        const auto num_buckets = m_buckets.size();
-        const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
-    }
-
     template <typename Creator, typename Value, typename... Args>
     std::pair<iterator, bool> find_or_create_impl(Value&& key, Args&&... args)
     {
@@ -475,7 +466,7 @@ protected:
         Creator::construct(element_list, std::forward<Value>(key), std::forward<Args>(args)...);
 
         // emplace_front does not return anything until C++17, so do it the hard way...
-        auto& result = element_list.begin();
+        auto list_iterator = element_list.begin();
 
         // We're already locked: we can do relaxed memory semantics.
         const std::size_t num_elements = m_num_elements.fetch_add(1u, std::memory_order_relaxed) + 1u;
@@ -497,7 +488,7 @@ protected:
             rehash(std::max(num_buckets * 3u / 2u, load_factor_required_buckets * 2u));
         }
 
-        return std::make_pair(iterator{*this, result}, true);
+        return std::make_pair(iterator{*this, list_iterator}, true);
     }
 
     mutable SharedMutex m_bucket_mutex;
@@ -520,11 +511,17 @@ template <typename Key, typename Hash = std::hash<Key>>
 class ConcurrentUnorderedSet : private ConcurrentHashTable<ConcurrentUnorderedSetTraits<Key, Hash>>
 {
 public:
-    using Traits       = ConcurrentUnorderedSetTraits<Key, Hash>;
-    using Base         = ConcurrentHashTable<Traits>;
-    using primary_type = Key;
-    using Base::ElementList;
-    using Base::SharedMutex;
+    using Traits         = ConcurrentUnorderedSetTraits<Key, Hash>;
+    using Base           = ConcurrentHashTable<Traits>;
+    using key_type       = typename Traits::key_type;
+    using value_type     = typename Traits::value_type;
+    using primary_type   = Key;
+    using hasher         = typename Traits::hasher;
+    using iterator       = typename Base::iterator;
+    using const_iterator = typename Base::const_iterator;
+    using ElementList    = typename Base::ElementList;
+    using LockingList    = typename Base::LockingList;
+    using SharedMutex    = typename Base::SharedMutex;
 
 private:
     struct IdentityCopy
@@ -602,11 +599,17 @@ template <typename Key, typename T, typename Hash = std::hash<Key>>
 class ConcurrentUnorderedMap : private ConcurrentHashTable<ConcurrentUnorderedMapTraits<Key, T, Hash>>
 {
 public:
-    using Traits       = ConcurrentUnorderedMapTraits<Key, T, Hash>;
-    using Base         = ConcurrentHashTable<Traits>;
-    using primary_type = T;
-    using Base::ElementList;
-    using Base::SharedMutex;
+    using Traits         = ConcurrentUnorderedMapTraits<Key, T, Hash>;
+    using Base           = ConcurrentHashTable<Traits>;
+    using key_type       = typename Traits::key_type;
+    using value_type     = typename Traits::value_type;
+    using primary_type   = typename Traits::primary_type;
+    using hasher         = typename Traits::hasher;
+    using iterator       = typename Base::iterator;
+    using const_iterator = typename Base::const_iterator;
+    using ElementList    = typename Base::ElementList;
+    using LockingList    = typename Base::LockingList;
+    using SharedMutex    = typename Base::SharedMutex;
 
 private:
     struct ConstructGenerator
@@ -650,12 +653,12 @@ public:
     const T& at(const Key& key) const
     {
         // Read lock on bucket list
-        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+        std::shared_lock<SharedMutex> bucket_lock(Base::m_bucket_mutex);
 
-        const auto bucket_count = m_buckets.size();
+        const auto bucket_count = Base::m_buckets.size();
         const auto bucket_idx   = get_bucket_index(hasher{}(key), bucket_count);
 
-        const LockingList& locking_list = m_buckets[bucket_idx];
+        const LockingList& locking_list = Base::m_buckets[bucket_idx];
         const ElementList& element_list = locking_list.m_list;
 
         // Read lock on linked list
@@ -725,12 +728,12 @@ private:
     bool update_impl(const Key& key, primary_type&& value)
     {
         // Read lock on bucket list
-        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+        std::shared_lock<SharedMutex> bucket_lock(Base::m_bucket_mutex);
 
-        const auto num_buckets = m_buckets.size();
+        const auto num_buckets = Base::m_buckets.size();
         const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
 
-        LockingList& locking_list = m_buckets[bucket_idx];
+        LockingList& locking_list = Base::m_buckets[bucket_idx];
         ElementList& element_list = locking_list.m_list;
 
         // Write lock on linked list.
