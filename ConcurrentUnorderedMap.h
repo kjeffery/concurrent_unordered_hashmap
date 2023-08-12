@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <cassert>
 #include <cmath>
+#include <cstring> // memcpy
 #include <forward_list>
 #include <iomanip>
 #include <iostream>
