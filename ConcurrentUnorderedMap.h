@@ -340,7 +340,8 @@ public:
     void swap(ConcurrentHashTable& other) noexcept
     {
         // Write lock on bucket list.
-        // Swap
+        std::unique_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+        m_buckets.swap(other.m_buckets);
     }
 
     float load_factor() const
