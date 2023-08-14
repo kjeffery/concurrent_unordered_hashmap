@@ -322,19 +322,36 @@ public:
     iterator find(const key_type& key)
     {
         // Read lock on bucket list
-        // Read lock on linked list
+        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
 
-        // Lookup value. If not there, throw
-        return iterator{};
+        const auto num_buckets = m_buckets.size();
+        const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
+
+        LockingList& locking_list = m_buckets[bucket_idx];
+        ElementList& element_list = locking_list.m_list;
+
+        // Read lock on list
+        std::shared_lock<SharedMutex> list_lock(locking_list.m_mutex);
+
+        // Lookup value.
+        auto compare = [&key](const auto& r) { return key_equal{}(get_key(r), key); };
+
+        auto it = std::find_if(element_list.begin(), element_list.end(), compare);
+        if (it != element_list.cend()) {
+            // We can unlock before we create the iterator, because our list iterator will not be invalidated, and the
+            // debug iterator does some check that require locks, leading to deadlock if we don't unlock.
+            list_lock.unlock();
+            bucket_lock.unlock();
+            return std::make_pair(iterator{*this, it}, false);
+        } else {
+            list_lock.unlock();
+            bucket_lock.unlock();
+            return iterator{};
+        }
     }
 
     const_iterator find(const key_type& key) const
     {
-        // Read lock on bucket list
-        // Read lock on linked list
-
-        // Lookup value. If not there, throw
-        return iterator{};
     }
 
     // While technically thread-safe, use this with caution if there are other active threads.
@@ -518,10 +535,10 @@ public:
     using Base           = ConcurrentHashTable<Traits>;
     using key_type       = typename Traits::key_type;
     using value_type     = typename Traits::value_type;
-    using primary_type   = Key;
+    using primary_type   = typename Traits::primary_type;
     using hasher         = typename Traits::hasher;
     using key_equal      = typename Traits::key_equal;
-    using iterator       = typename Base::iterator;
+    using iterator       = typename Base::const_iterator;
     using const_iterator = typename Base::const_iterator;
     using ElementList    = typename Base::ElementList;
     using LockingList    = typename Base::LockingList;
@@ -566,6 +583,11 @@ private:
     };
 
 public:
+    using Base::Base;
+    using Base::find;
+    using Base::histogram;
+    using Base::rehash;
+
     std::pair<iterator, bool> insert(const value_type& value)
     {
         return Base::template find_or_create_impl<ConstructCopy>(value.first);
@@ -653,6 +675,7 @@ private:
 
 public:
     using Base::Base;
+    using Base::find;
     using Base::histogram;
     using Base::rehash;
 
