@@ -450,7 +450,7 @@ protected:
     }
 
     template <typename Creator, typename Value, typename... Args>
-    std::pair<iterator, bool> find_or_create_impl(Value&& key, Args&&... args)
+    std::pair<typename ElementList::iterator, bool> find_or_create_impl(Value&& key, Args&&... args)
     {
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
@@ -472,11 +472,7 @@ protected:
 
         auto it = std::find_if(element_list.begin(), element_list.end(), compare);
         if (it != element_list.cend()) {
-            // We can unlock before we create the iterator, because our list iterator will not be invalidated, and the
-            // debug iterator does some check that require locks, leading to deadlock if we don't unlock.
-            list_lock.unlock();
-            bucket_lock.unlock();
-            return std::make_pair(iterator{*this, it}, false);
+            return std::make_pair(it, false);
         }
 
         // Else create
@@ -507,7 +503,7 @@ protected:
             rehash(std::max(num_buckets * 3u / 2u, load_factor_required_buckets * 2u));
         }
 
-        return std::make_pair(iterator{*this, list_iterator}, true);
+        return std::make_pair(list_iterator, true);
     }
 
     mutable SharedMutex m_bucket_mutex;
@@ -590,25 +586,29 @@ public:
 
     std::pair<iterator, bool> insert(const value_type& value)
     {
-        return Base::template find_or_create_impl<ConstructCopy>(value.first);
+        auto result = Base::template find_or_create_impl<ConstructCopy>(value.first);
+        return std::make_pair(iterator{*this, result.first}, result.second);
     }
 
     std::pair<iterator, bool> insert(value_type&& value)
     {
-        return Base::template find_or_create_impl<ConstructMove>(std::move(value));
+        auto result = Base::template find_or_create_impl<ConstructMove>(std::move(value));
+        return std::make_pair(iterator{*this, result.first}, result.second);
     }
 
     template <typename F>
     std::pair<iterator, bool> insert_and_run(const Key& key, F&& f)
     {
-        return Base::template find_or_create_impl<IdentityCopy>(key, std::forward<F>(f));
+        auto result = Base::template find_or_create_impl<IdentityCopy>(key, std::forward<F>(f));
+        return std::make_pair(iterator{*this, result.first}, result.second);
     }
 
     // TODO: make sure find_or_create_impl takes Key rvalue references
     template <typename F>
     std::pair<iterator, bool> insert_and_run(Key&& key, F&& f)
     {
-        return Base::template find_or_create_impl<IdentityMove>(std::move(key), std::forward<F>(f));
+        auto result = Base::template find_or_create_impl<IdentityMove>(std::move(key), std::forward<F>(f));
+        return std::make_pair(iterator{*this, result.first}, result.second);
     }
 };
 
@@ -717,9 +717,10 @@ public:
     // accessed in a thead-safe manner. The map does nothing to prevent race conditions in modifying the returned
     // references. I suggest you copy them or store them in const values.
     template <typename F>
-    decltype(auto) generate(const Key& key, F&& creator)
+    std::pair<iterator, bool> generate(const Key& key, F&& creator)
     {
-        return Base::template find_or_create_impl<ConstructGenerator>(key, std::forward<F>(creator));
+        auto result = Base::template find_or_create_impl<ConstructGenerator>(key, std::forward<F>(creator));
+        return std::make_pair(iterator{*this, result.first}, result.second);
     }
 
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
@@ -742,7 +743,8 @@ public:
     // references. I suggest you copy them or store them in const values.
     std::pair<iterator, bool> insert(const value_type& value)
     {
-        return Base::template find_or_create_impl<ConstructCopy>(value.first, value.second);
+        auto result = Base::template find_or_create_impl<ConstructCopy>(value.first, value.second);
+        return std::make_pair(iterator{*this, result.first}, result.second);
     }
 
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
@@ -750,7 +752,8 @@ public:
     // references. I suggest you copy them or store them in const values.
     std::pair<iterator, bool> insert(value_type&& value)
     {
-        return Base::template find_or_create_impl<ConstructMove>(value.first, std::move(value.second));
+        auto result = Base::template find_or_create_impl<ConstructMove>(value.first, std::move(value.second));
+        return std::make_pair(iterator{*this, result.first}, result.second);
     }
 
 private:
