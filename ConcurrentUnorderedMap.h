@@ -121,12 +121,24 @@ public:
     friend class iterator;
     friend class const_iterator;
 
-    class iterator
+    enum class IteratorType
     {
-        using list_iterator = typename ElementList::iterator;
+        CONST,
+        NON_CONST
+    };
 
-        list_iterator        m_iterator;
-        ConcurrentHashTable* m_table{nullptr};
+    template <IteratorType iterator_type>
+    class iterator_base
+    {
+        using list_iterator = std::conditional_t<iterator_type == IteratorType::CONST,
+                                                 typename ElementList::const_iterator,
+                                                 typename ElementList::iterator>;
+
+        using table_type =
+            std::conditional_t<iterator_type == IteratorType::CONST, const ConcurrentHashTable, ConcurrentHashTable>;
+
+        list_iterator m_iterator;
+        table_type*   m_table{nullptr};
 
     public:
         using iterator_category = typename std::iterator_traits<list_iterator>::iterator_category;
@@ -135,31 +147,29 @@ public:
         using pointer           = typename std::iterator_traits<list_iterator>::pointer;
         using reference         = typename std::iterator_traits<list_iterator>::reference;
 
-        iterator() = default;
+        iterator_base() = default;
 
         // TODO: private
-        explicit iterator(ConcurrentHashTable& table)
+        explicit iterator_base(table_type& table) noexcept
         : m_table(std::addressof(table))
         {
             ensures(is_valid_iterator());
         }
 
         // TODO: private
-        iterator(ConcurrentHashTable& table, list_iterator iterator)
+        iterator_base(table_type& table, list_iterator iterator) noexcept
         : m_table(std::addressof(table))
         , m_iterator(std::move(iterator))
         {
             expects(is_valid_iterator());
         }
 
-        void safe_update(value_type v)
+        iterator_base(const iterator_base<IteratorType::NON_CONST>& other) noexcept
+        : m_table(other.m_table)
+        , m_iterator(other.m_iterator)
         {
-            // Read lock on buckets
-            // Write lock on bucket list
-            // update value with std::move
         }
 
-        // This is not a thread-safe way to update. Use safe_update to do so.
         reference operator*() const noexcept
         {
             return *m_iterator;
@@ -171,7 +181,7 @@ public:
         }
 
         // Incrementing an end iterator results in undefined behavior.
-        iterator operator++()
+        iterator_base operator++()
         {
             expects(m_table);
             expects(!is_end_iterator());
@@ -220,23 +230,27 @@ public:
             return *this;
         }
 
-        iterator operator++(int)
+        iterator_base operator++(int)
         {
-            iterator result(*this);
-            this->   operator++();
+            iterator_base result(*this);
+            this->        operator++();
             return result;
         }
 
-        friend bool operator==(const iterator& a, const iterator& b) noexcept
+        friend bool operator==(const iterator_base& a, const iterator_base& b) noexcept
         {
-            if (a.is_end_iterator() && b.is_end_iterator()) {
+            const bool end_a = a.is_end_iterator();
+            const bool end_b = b.is_end_iterator();
+            if (end_a && end_b) {
                 return true;
+            } else if (end_a || end_b) {
+                return false;
             }
             expects(a.m_table == b.m_table);
             return a.m_iterator == b.m_iterator;
         }
 
-        friend bool operator!=(const iterator& a, const iterator& b) noexcept
+        friend bool operator!=(const iterator_base& a, const iterator_base& b) noexcept
         {
             return !(a == b);
         }
@@ -248,6 +262,12 @@ public:
         }
 
     private:
+        bool is_end_iterator() const noexcept
+        {
+            std::shared_lock<SharedMutex> bucket_lock(m_table->m_bucket_mutex);
+            return is_end_iterator(bucket_lock);
+        }
+
         template <typename LockType>
         bool is_end_iterator(const LockType& bucket_lock) const noexcept
         {
@@ -281,13 +301,12 @@ public:
 
             const auto  bucket_count = m_table->m_buckets.size();
             const auto& key          = get_key(*m_iterator);
-            return ConcurrentHashTable::get_bucket_index(hasher{}(key), bucket_count);
+            return table_type::get_bucket_index(hasher{}(key), bucket_count);
         }
     };
 
-    class const_iterator
-    {
-    };
+    using iterator       = iterator_base<IteratorType::NON_CONST>;
+    using const_iterator = iterator_base<IteratorType::CONST>;
 
     explicit ConcurrentHashTable(size_type bucket_count)
     : m_buckets(std::max(bucket_count, size_type(1)))
@@ -319,7 +338,10 @@ public:
         }
     }
 
-    iterator find(const key_type& key)
+    // We don't have one shared ElementList, and things may change from another thread between this call and the caller.
+    // We can't return a valid end iterator for a list that may not exist in the future, so we pair it up with a valid
+    // flag.
+    std::pair<typename ElementList::iterator, bool> find_impl(const key_type& key)
     {
         // Read lock on bucket list
         std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
@@ -328,7 +350,7 @@ public:
         const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
 
         LockingList& locking_list = m_buckets[bucket_idx];
-        ElementList& element_list = locking_list.m_list;
+        ElementList&       element_list = locking_list.m_list;
 
         // Read lock on list
         std::shared_lock<SharedMutex> list_lock(locking_list.m_mutex);
@@ -338,20 +360,38 @@ public:
 
         auto it = std::find_if(element_list.begin(), element_list.end(), compare);
         if (it != element_list.cend()) {
-            // We can unlock before we create the iterator, because our list iterator will not be invalidated, and the
-            // debug iterator does some check that require locks, leading to deadlock if we don't unlock.
-            list_lock.unlock();
-            bucket_lock.unlock();
-            return std::make_pair(iterator{*this, it}, false);
+            return std::make_pair(it, true);
         } else {
-            list_lock.unlock();
-            bucket_lock.unlock();
-            return iterator{};
+            return std::make_pair(typename ElementList::iterator{}, false);
         }
     }
 
-    const_iterator find(const key_type& key) const
+    // We don't have one shared ElementList, and things may change from another thread between this call and the caller.
+    // We can't return a valid end iterator for a list that may not exist in the future, so we pair it up with a valid
+    // flag.
+    std::pair<typename ElementList::const_iterator, bool> find_impl(const key_type& key) const
     {
+        // Read lock on bucket list
+        std::shared_lock<SharedMutex> bucket_lock(m_bucket_mutex);
+
+        const auto num_buckets = m_buckets.size();
+        const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
+
+        const LockingList& locking_list = m_buckets[bucket_idx];
+        const ElementList& element_list = locking_list.m_list;
+
+        // Read lock on list
+        std::shared_lock<SharedMutex> list_lock(locking_list.m_mutex);
+
+        // Lookup value.
+        auto compare = [&key](const auto& r) { return key_equal{}(get_key(r), key); };
+
+        auto it = std::find_if(element_list.begin(), element_list.end(), compare);
+        if (it != element_list.cend()) {
+            return std::make_pair(it, true);
+        } else {
+            return std::make_pair(typename ElementList::iterator{}, false);
+        }
     }
 
     // While technically thread-safe, use this with caution if there are other active threads.
@@ -580,27 +620,85 @@ private:
 
 public:
     using Base::Base;
-    using Base::find;
     using Base::histogram;
     using Base::rehash;
+
+    iterator begin()
+    {
+        // Read lock. Find first iterator
+        // return iterator{*this, }
+        return iterator{};
+    }
+
+    iterator end()
+    {
+        return iterator{};
+    }
+
+    iterator find(const Key& key)
+    {
+        auto result = Base::find_impl(key);
+
+        // Another thread may alter our lists between the base call and here (e.g., rehash), and we cannot rely on a
+        // generic end iterator from the forward_list. Recreate the end iterator explicitly.
+        if (result.second) {
+            return iterator{*this, result.first};
+        } else {
+            return end();
+        }
+    }
+
+    const_iterator find(const Key& key) const
+    {
+        auto result = Base::find_impl(key);
+
+        // Another thread may alter our lists between the base call and here (e.g., rehash), and we cannot rely on a
+        // generic end iterator from the forward_list. Recreate the end iterator explicitly.
+        if (result.second) {
+            return const_iterator{*this, result.first};
+        } else {
+            return end();
+        }
+    }
 
     std::pair<iterator, bool> insert(const value_type& value)
     {
         auto result = Base::template find_or_create_impl<ConstructCopy>(value.first);
-        return std::make_pair(iterator{*this, result.first}, result.second);
+
+        // Another thread may alter our lists between the base call and here (e.g., rehash), and we cannot rely on a
+        // generic end iterator from the forward_list. Recreate the end iterator explicitly.
+        if (result.second) {
+            return std::make_pair(iterator{*this, result.first}, result.second);
+        } else {
+            return std::make_pair(end(), result.second);
+        }
     }
 
     std::pair<iterator, bool> insert(value_type&& value)
     {
         auto result = Base::template find_or_create_impl<ConstructMove>(std::move(value));
-        return std::make_pair(iterator{*this, result.first}, result.second);
+
+        // Another thread may alter our lists between the base call and here (e.g., rehash), and we cannot rely on a
+        // generic end iterator from the forward_list. Recreate the end iterator explicitly.
+        if (result.second) {
+            return std::make_pair(iterator{*this, result.first}, result.second);
+        } else {
+            return std::make_pair(end(), result.second);
+        }
     }
 
     template <typename F>
     std::pair<iterator, bool> insert_and_run(const Key& key, F&& f)
     {
         auto result = Base::template find_or_create_impl<IdentityCopy>(key, std::forward<F>(f));
-        return std::make_pair(iterator{*this, result.first}, result.second);
+
+        // Another thread may alter our lists between the base call and here (e.g., rehash), and we cannot rely on a
+        // generic end iterator from the forward_list. Recreate the end iterator explicitly.
+        if (result.second) {
+            return std::make_pair(iterator{*this, result.first}, result.second);
+        } else {
+            return std::make_pair(end(), result.second);
+        }
     }
 
     // TODO: make sure find_or_create_impl takes Key rvalue references
@@ -608,7 +706,14 @@ public:
     std::pair<iterator, bool> insert_and_run(Key&& key, F&& f)
     {
         auto result = Base::template find_or_create_impl<IdentityMove>(std::move(key), std::forward<F>(f));
-        return std::make_pair(iterator{*this, result.first}, result.second);
+
+        // Another thread may alter our lists between the base call and here (e.g., rehash), and we cannot rely on a
+        // generic end iterator from the forward_list. Recreate the end iterator explicitly.
+        if (result.second) {
+            return std::make_pair(iterator{*this, result.first}, result.second);
+        } else {
+            return std::make_pair(end(), result.second);
+        }
     }
 };
 
@@ -675,9 +780,20 @@ private:
 
 public:
     using Base::Base;
-    using Base::find;
     using Base::histogram;
     using Base::rehash;
+
+    iterator begin()
+    {
+        // Read lock. Find first iterator
+        // return iterator{*this, }
+        return iterator{};
+    }
+
+    iterator end()
+    {
+        return iterator{};
+    }
 
     const T& at(const Key& key) const
     {
@@ -720,7 +836,14 @@ public:
     std::pair<iterator, bool> generate(const Key& key, F&& creator)
     {
         auto result = Base::template find_or_create_impl<ConstructGenerator>(key, std::forward<F>(creator));
-        return std::make_pair(iterator{*this, result.first}, result.second);
+
+        // Another thread may alter our lists between the base call and here (e.g., rehash), and we cannot rely on a
+        // generic end iterator from the forward_list. Recreate the end iterator explicitly.
+        if (result.second) {
+            return std::make_pair(iterator{*this, result.first}, result.second);
+        } else {
+            return std::make_pair(end(), result.second);
+        }
     }
 
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
@@ -744,7 +867,14 @@ public:
     std::pair<iterator, bool> insert(const value_type& value)
     {
         auto result = Base::template find_or_create_impl<ConstructCopy>(value.first, value.second);
-        return std::make_pair(iterator{*this, result.first}, result.second);
+
+        // Another thread may alter our lists between the base call and here (e.g., rehash), and we cannot rely on a
+        // generic end iterator from the forward_list. Recreate the end iterator explicitly.
+        if (result.second) {
+            return std::make_pair(iterator{*this, result.first}, result.second);
+        } else {
+            return std::make_pair(end(), result.second);
+        }
     }
 
     // These return non-const references for maximum flexibility even though it's up to the user to make sure they are
@@ -753,7 +883,14 @@ public:
     std::pair<iterator, bool> insert(value_type&& value)
     {
         auto result = Base::template find_or_create_impl<ConstructMove>(value.first, std::move(value.second));
-        return std::make_pair(iterator{*this, result.first}, result.second);
+
+        // Another thread may alter our lists between the base call and here (e.g., rehash), and we cannot rely on a
+        // generic end iterator from the forward_list. Recreate the end iterator explicitly.
+        if (result.second) {
+            return std::make_pair(iterator{static_cast<Base&>(*this), result.first}, result.second);
+        } else {
+            return std::make_pair(end(), result.second);
+        }
     }
 
 private:
