@@ -1,49 +1,50 @@
 #include "ConcurrentUnorderedMap.h"
 
 #include <iostream>
+#include <thread>
 
 struct Verbose
 {
     Verbose()
     {
-        std::cerr << __FUNCSIG__ << '\n';
+        // std::cerr << __FUNCSIG__ << '\n';
     }
 
     explicit Verbose(int x)
     : m_id(x)
     {
-        std::cerr << __FUNCSIG__ << '\n';
+        // std::cerr << __FUNCSIG__ << '\n';
     }
 
     Verbose(const Verbose& other)
     : m_id(other.m_id)
     {
-        std::cerr << __FUNCSIG__ << '\n';
+        // std::cerr << __FUNCSIG__ << '\n';
     }
 
     Verbose(Verbose&& other)
     : m_id(other.m_id)
     {
-        std::cerr << __FUNCSIG__ << '\n';
+        // std::cerr << __FUNCSIG__ << '\n';
     }
 
     Verbose& operator=(const Verbose& other)
     {
-        std::cerr << __FUNCSIG__ << '\n';
+        // std::cerr << __FUNCSIG__ << '\n';
         m_id = other.m_id;
         return *this;
     }
 
     Verbose& operator=(Verbose&& other)
     {
-        std::cerr << __FUNCSIG__ << '\n';
+        // std::cerr << __FUNCSIG__ << '\n';
         m_id = other.m_id;
         return *this;
     }
 
     ~Verbose()
     {
-        std::cerr << __FUNCSIG__ << '\n';
+        // std::cerr << __FUNCSIG__ << '\n';
     }
 
     void report() const
@@ -57,7 +58,7 @@ struct Verbose
 void do_ints(ConcurrentUnorderedMap<int, int>& cache, int start, int end)
 {
     for (int i = start; i < end; ++i) {
-        cache.find_or_generate(i, [](int x) { return x * x; });
+        cache.generate(i, [](int x) { return x * x; });
     }
 }
 
@@ -67,33 +68,76 @@ void test_rehash()
 
     auto f = [](auto x) { return Verbose{x}; };
 
-    const auto& a = cache.find_or_generate(1, f);
-    a.report();
-    const auto& b = cache.find_or_generate(2, f);
-    b.report();
-    const auto& c = cache.find_or_create(3);
-    c.report();
-    const auto& d = cache.find_or_create(3, Verbose{42});
-    d.report();
+    const auto& a = cache.generate(1, f);
+    a.first->second.report();
+    const auto& b = cache.generate(2, f);
+    b.first->second.report();
+    const auto& c = cache.insert(std::make_pair(3, Verbose{8}));
+    // c.first->second.report();
+    // const auto& d = cache.find_or_create(3, Verbose{42});
+    // d.first->second.report();
 
     Verbose v{101};
-    const auto& e = cache.find_or_create(3, v);
-    e.report();
+    // const auto& e = cache.find_or_create(3, v);
+    // e.first->second.report();
 
-    cache.histogram();
+    // cache.histogram();
 
     cache.rehash(100);
-    a.report();
-    b.report();
-    c.report();
+    a.first->second.report();
+    b.first->second.report();
+    // c.first->second.report();
 
-    cache.histogram();
+    // cache.histogram();
     std::cout << "End of function\n";
 }
 
+void test_set()
+{
+    ConcurrentUnorderedSet<int> set;
+
+    auto i0 = set.insert(3);
+    auto i1 = set.insert(4);
+    auto i2 = set.insert(5);
+    auto i3 = set.insert(6);
+
+    assert(i0.second == true);
+    assert(i1.second == true);
+    assert(i2.second == true);
+    assert(i3.second == true);
+
+    auto i4 = set.insert(4);
+    assert(i4.second == false);
+
+    int  count = 0;
+    auto f     = [&count]() { ++count; };
+    auto i5    = set.insert_and_run(7, f);
+    auto i6    = set.insert_and_run(8, f);
+    auto i7    = set.insert_and_run(7, f);
+
+    auto i8 = set.find(8);
+    auto i9 = set.find(12);
+
+    assert(i8 != set.end());
+    assert(i9 == set.end());
+}
+
+template <typename T>
+struct MyContainer
+{
+    void f(T&& t)
+    {
+    }
+
+    template <typename U>
+    void g(U&& u)
+    {
+    }
+};
+
 int main()
 {
-    //test_rehash();
+    test_rehash();
 #if 0
     ConcurrentUnorderedMap<int, int> cache;
 
@@ -124,10 +168,12 @@ int main()
     std::cout << std::addressof(a) << std::endl;
 #endif
 
+    test_set();
+
 #if 1
     ConcurrentUnorderedMap<int, int> cache;
-    constexpr int num_threads = 32;
-    std::vector<std::thread> threads;
+    constexpr int                    num_threads = 32;
+    std::vector<std::thread>         threads;
     threads.reserve(num_threads);
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back(&do_ints, std::ref(cache), i * 100, i * 100 + 2000);
