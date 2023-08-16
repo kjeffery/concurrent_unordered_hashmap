@@ -239,6 +239,7 @@ public:
 
         friend bool operator==(const iterator_base& a, const iterator_base& b) noexcept
         {
+            // TODO: race condition
             const bool end_a = a.is_end_iterator();
             const bool end_b = b.is_end_iterator();
             if (end_a && end_b) {
@@ -264,6 +265,9 @@ public:
     private:
         bool is_end_iterator() const noexcept
         {
+            if (!m_table) {
+                return true;
+            }
             std::shared_lock<SharedMutex> bucket_lock(m_table->m_bucket_mutex);
             return is_end_iterator(bucket_lock);
         }
