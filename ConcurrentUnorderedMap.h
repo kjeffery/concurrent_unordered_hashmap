@@ -28,19 +28,17 @@ inline double bitsToDouble(uint64_t n) noexcept
 {
     static_assert(std::numeric_limits<double>::is_iec559, "Format must be IEEE-754");
 
-    // Set the exponent to 1023, but leave the sign as zero. With the bias, this
-    // ultimately means the exponent bits are set to zero and the exponent is
-    // therefore implicitly one.  This allows us to fill in the bits for a
-    // number in [1, 2), which is uniformly distributed.
+    // Set the exponent to 1023, but leave the sign as zero. With the bias, this ultimately means the exponent bits are
+    // set to zero and the exponent is therefore implicitly one.  This allows us to fill in the bits for a number in [1,
+    // 2), which is uniformly distributed.
     constexpr uint64_t expMask = 1023ULL << 52ULL;
 
-    // Use n's higher-order bits by shifting past the sign and exponent into
-    // the fraction. This isn't strictly necessary, in the general case, but
-    // it's important for some of the QMC algorithms.
+    // Use n's higher-order bits by shifting past the sign and exponent into the fraction. This isn't strictly
+    // necessary, in the general case, but it's important for some of the QMC algorithms. It's also important in this
+    // implementation so that we keep the mask in a valid state.
     const uint64_t asInt = expMask | (n >> 12ULL);
 
-    // Force our bits into a floating point representation, and subtract one,
-    // to get in [0, 1).
+    // Force our bits into a floating point representation, and subtract one, to get in [0, 1).
     const double f = bitCast<double>(asInt) - 1.0;
 
     ensures(f >= 0.0 && f < 1.0);
@@ -137,6 +135,11 @@ public:
         using table_type =
             std::conditional_t<iterator_type == IteratorType::CONST, const ConcurrentHashTable, ConcurrentHashTable>;
 
+        // I don't like this bool, but it's the easiest way I can see doing a good end iterator. A value-initialized
+        // list_iterator is not guaranteed to compare equal to the end iterator of a list. If we're really worried about
+        // size, we could fit this into the least-significant bits of the pointer, but that's gross.
+        bool m_end_iterator{true};
+
         list_iterator m_iterator;
         table_type*   m_table{nullptr};
 
@@ -158,25 +161,30 @@ public:
 
         // TODO: private
         iterator_base(table_type& table, list_iterator iterator) noexcept
-        : m_table(std::addressof(table))
+        : m_end_iterator{false}
+        , m_table(std::addressof(table))
         , m_iterator(std::move(iterator))
         {
             expects(is_valid_iterator());
+            expects(iterator != list_iterator{}); // No value-initialized iterators, fool!
         }
 
         iterator_base(const iterator_base<IteratorType::NON_CONST>& other) noexcept
-        : m_table(other.m_table)
+        : m_end_iterator(other.m_end_iterator)
+        , m_table(other.m_table)
         , m_iterator(other.m_iterator)
         {
         }
 
         reference operator*() const noexcept
         {
+            expects(!is_end_iterator());
             return *m_iterator;
         }
 
         pointer operator->() const noexcept
         {
+            expects(!is_end_iterator());
             return m_iterator.operator->();
         }
 
@@ -202,6 +210,7 @@ public:
                     // Potentially set up for next step, or find the end of the bucket list.
                     ++bucket_idx;
                     if (bucket_idx >= num_buckets) {
+                        m_end_iterator = true;
                         return *this;
                     }
                 }
@@ -217,7 +226,7 @@ public:
                 if (m_iterator == locking_list.end()) {
                     ++bucket_idx;
                     if (bucket_idx >= num_buckets) {
-                        // End iterator
+                        m_end_iterator = true;
                         break;
                     }
                 } else {
@@ -239,14 +248,14 @@ public:
 
         friend bool operator==(const iterator_base& a, const iterator_base& b) noexcept
         {
-            // TODO: race condition
-            const bool end_a = a.is_end_iterator();
-            const bool end_b = b.is_end_iterator();
-            if (end_a && end_b) {
+            const auto* const table_a = a.m_table;
+            const auto* const table_b = b.m_table;
+
+            // Value-constructed iterators
+            if (table_a == nullptr && table_b == nullptr) {
                 return true;
-            } else if (end_a || end_b) {
-                return false;
             }
+
             expects(a.m_table == b.m_table);
             return a.m_iterator == b.m_iterator;
         }
@@ -268,22 +277,14 @@ public:
             if (!m_table) {
                 return true;
             }
-            std::shared_lock<SharedMutex> bucket_lock(m_table->m_bucket_mutex);
-            return is_end_iterator(bucket_lock);
-        }
-
-        template <typename LockType>
-        bool is_end_iterator(const LockType& bucket_lock) const noexcept
-        {
-            expects(bucket_lock.owns_lock());
-            return (m_table == nullptr) || (get_bucket_index(bucket_lock) >= m_table->m_buckets.size());
+            return m_end_iterator;
         }
 
         template <typename LockType>
         bool is_valid_iterator(const LockType& bucket_lock) const noexcept
         {
             expects(bucket_lock.owns_lock());
-            if (is_end_iterator(bucket_lock)) {
+            if (is_end_iterator()) {
                 return true;
             }
 
@@ -484,6 +485,10 @@ protected:
 
     static std::size_t get_bucket_index(std::size_t hash, std::size_t num_buckets) noexcept
     {
+        // Implementations are allowed to use identity functions as std::hash implementations. This messes with our
+        // conversion to double later, where we get really small values and end up setting everything to 0.
+        hash *= 0x17f6eb688799f2cbU;
+
         // Hashing by multiplication
         // https://en.wikipedia.org/wiki/Hash_table#Hashing_by_multiplication
         constexpr double phi  = 1.618033988749894848204;
@@ -631,12 +636,12 @@ public:
     {
         // Read lock. Find first iterator
         // return iterator{*this, }
-        return iterator{};
+        return iterator{*this};
     }
 
     iterator end()
     {
-        return iterator{};
+        return iterator{*this};
     }
 
     iterator find(const Key& key)
@@ -791,12 +796,12 @@ public:
     {
         // Read lock. Find first iterator
         // return iterator{*this, }
-        return iterator{};
+        return iterator{*this};
     }
 
     iterator end()
     {
-        return iterator{};
+        return iterator{*this};
     }
 
     const T& at(const Key& key) const
