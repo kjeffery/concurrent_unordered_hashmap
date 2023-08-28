@@ -99,6 +99,15 @@ inline const T& get_value(const std::pair<T, U>& v) noexcept
     return v.second;
 }
 
+#ifdef __cpp_lib_hardware_interference_size
+using std::hardware_constructive_interference_size;
+using std::hardware_destructive_interference_size;
+#else
+// 64 bytes on x86-64 │ L1_CACHE_BYTES │ L1_CACHE_SHIFT │ __cacheline_aligned │ ...
+constexpr std::size_t hardware_constructive_interference_size = 64;
+constexpr std::size_t hardware_destructive_interference_size  = 64;
+#endif
+
 template <typename Traits>
 class ConcurrentHashTable
 {
@@ -355,7 +364,7 @@ public:
         const auto bucket_idx  = get_bucket_index(hasher{}(key), num_buckets);
 
         LockingList& locking_list = m_buckets[bucket_idx];
-        ElementList&       element_list = locking_list.m_list;
+        ElementList& element_list = locking_list.m_list;
 
         // Read lock on list
         std::shared_lock<SharedMutex> list_lock(locking_list.m_mutex);
@@ -470,7 +479,7 @@ protected:
 
     using SharedMutex = std::shared_timed_mutex;
 
-    struct LockingList
+    struct alignas(hardware_constructive_interference_size) LockingList
     {
         ElementList         m_list;
         mutable SharedMutex m_mutex;
