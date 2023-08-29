@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -519,16 +520,22 @@ protected:
         LockingList& locking_list = m_buckets[bucket_idx];
         ElementList& element_list = locking_list.m_list;
 
-        // Write lock on linked list.
-        // There is a chance that we're just reading the value, in which case a read lock would be just fine, but we
-        // don't have boost's upgrade lock to move from a read to a write lock.
-        std::unique_lock<SharedMutex> list_lock(locking_list.m_mutex);
+        std::shared_lock<SharedMutex> list_lock_read(locking_list.m_mutex);
 
         // Lookup value. If there, return
-
         auto compare = [&key](const auto& r) { return key_equal{}(get_key(r), key); };
 
         auto it = std::find_if(element_list.begin(), element_list.end(), compare);
+        if (it != element_list.cend()) {
+            return std::make_pair(it, false);
+        }
+
+        list_lock_read.unlock();
+
+        std::unique_lock<SharedMutex> list_lock_write(locking_list.m_mutex);
+
+        // We have to check for existence again
+        it = std::find_if(element_list.begin(), element_list.end(), compare);
         if (it != element_list.cend()) {
             return std::make_pair(it, false);
         }
@@ -541,15 +548,14 @@ protected:
         // emplace_front does not return anything until C++17, so do it the hard way...
         auto list_iterator = element_list.begin();
 
-        // We're already locked: we can do relaxed memory semantics.
-        const std::size_t num_elements = m_num_elements.fetch_add(1u, std::memory_order_relaxed) + 1u;
-        const auto max_load_factor = m_max_load_factor.load(std::memory_order_relaxed); // Only do atomic load once...
-
         // We can unlock before we create the iterator, because our list iterator will not be invalidated, and the
         // debug iterator does some check that require locks, leading to deadlock if we don't unlock.
         // We also want to unlock before we rehash.
-        list_lock.unlock();
+        list_lock_write.unlock();
         bucket_lock.unlock();
+
+        const std::size_t num_elements = m_num_elements.fetch_add(1u) + 1u;
+        const auto max_load_factor = m_max_load_factor.load(); // Only do atomic load once...
 
         if (num_elements > max_load_factor * num_buckets) {
             // 1. load_factor = num_elements / num_buckets
