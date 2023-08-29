@@ -480,7 +480,7 @@ protected:
 
     using SharedMutex = std::shared_timed_mutex;
 
-    struct alignas(hardware_constructive_interference_size) LockingList
+    struct alignas(hardware_destructive_interference_size) LockingList
     {
         ElementList         m_list;
         mutable SharedMutex m_mutex;
